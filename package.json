@@ -1,0 +1,22 @@
+{
+  "name": "daddy-review",
+  "version": "1.0.0",
+  "description": "Your Azure DevOps pull request review sidekick. Installable app, popups, no PAT needed.",
+  "private": true,
+  "license": "MIT",
+  "main": "server/index.js",
+  "bin": {
+    "daddy-review": "server/index.js"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "node demo/run-demo.js",
+    "install-app": "node server/index.js --install",
+    "uninstall-app": "node server/index.js --uninstall",
+    "icons": "node scripts/make-icons.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}
