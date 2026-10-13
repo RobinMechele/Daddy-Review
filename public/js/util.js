@@ -4,6 +4,10 @@ const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;
 /** Escape for HTML text and attribute values. Everything from Azure DevOps goes through this. */
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
 
+/** Profile pictures that failed to load; we show initials for those. */
+export const failedImages = new Set();
+export const imageSrc = (url) => `/avatar?u=${encodeURIComponent(url)}`;
+
 export const icon = (name, cls = '') => `<svg class="ic ${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 
 export function fmtAge(hours) {

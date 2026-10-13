@@ -6,7 +6,7 @@
  * to it over IPC. No web server, no ports, nothing to host. The app lives in the
  * tray so it can pop up desktop notifications while its window is closed.
  */
-const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, shell, protocol, nativeImage, screen, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, shell, protocol, nativeImage, screen, dialog, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -46,7 +46,12 @@ let tray = null;
 let fake = null;
 let quitting = false;
 let booted = false;
+let updater = null;
+let BLANK_PNG = null;
 const ui = { count: 0, bg: '#0a0e19', fg: '#e8ebf4' };
+// Show/hide Daddy Review from anywhere.
+const HOTKEY = 'CommandOrControl+Alt+R';
+const hotkey = { label: process.platform === 'darwin' ? '⌘⌥R' : 'Ctrl+Alt+R', active: false, failed: false };
 const liveNotifications = new Set(); // keep references so click handlers survive GC
 
 // ---- start ---------------------------------------------------------------------------
@@ -77,6 +82,20 @@ async function boot() {
 
   const { createCore } = require('../server/core');
   const { createLoopbackLogin } = require('../server/loopback');
+  const { createUpdater } = require('./updater');
+  ({ BLANK_PNG } = require('../server/pages'));
+  let lastUpdateStatus = null;
+  updater = createUpdater({
+    log: { info: () => {}, warn: (m) => core && core.log.warn(m) },
+    enabled: (app.isPackaged && !DEMO) || !!process.env.DADDY_UPDATE_URL,
+    notify: showNotification,
+    onChange: (st) => {
+      if (st.status === lastUpdateStatus) return;
+      lastUpdateStatus = st.status;
+      updateTray();
+      broadcast('daddy:refresh');
+    },
+  });
   core = createCore({
     DATA_DIR: dataDir,
     logFile: path.join(userData, 'daddy-review.log'),
@@ -84,7 +103,14 @@ async function boot() {
     notify: showNotification,
     // When you're looking at the window it shows the news itself.
     suppressToast: () => !!(mainWin && mainWin.isVisible() && mainWin.isFocused()),
-    host: { desktop: true, login: () => loopback.start(), autostart },
+    host: {
+      desktop: true,
+      login: () => loopback.start(),
+      autostart,
+      update: updater,
+      hotkey: { status: () => ({ ...hotkey }) },
+      onSettings: applyHotkey,
+    },
   });
   loopback = createLoopbackLogin({
     auth: core.auth,
@@ -102,8 +128,32 @@ async function boot() {
   createTray();
   createMain();
   firstRun();
+  applyHotkey(core.inbox.settings);
   booted = true;
   core.start();
+  updater.start();
+}
+
+function applyHotkey(settings) {
+  const want = settings.hotkey !== false;
+  if (want && !hotkey.active) {
+    try {
+      hotkey.active = globalShortcut.register(HOTKEY, toggleMain);
+    } catch {
+      hotkey.active = false;
+    }
+    // Another app may already own this shortcut.
+    hotkey.failed = !hotkey.active;
+  } else if (!want && hotkey.active) {
+    globalShortcut.unregister(HOTKEY);
+    hotkey.active = false;
+    hotkey.failed = false;
+  }
+}
+
+function toggleMain() {
+  if (mainWin && !mainWin.isDestroyed() && mainWin.isVisible() && mainWin.isFocused()) mainWin.hide();
+  else showMain();
 }
 
 function firstRun() {
@@ -135,6 +185,16 @@ function registerProtocol() {
       rel = decodeURIComponent(url.pathname);
     } catch {
       return new Response('Bad path', { status: 400 });
+    }
+    if (rel === '/avatar') {
+      // Profile pictures from Azure DevOps, loaded with your sign-in.
+      try {
+        const img = await core.image(String(url.searchParams.get('u')));
+        return new Response(img.data, { headers: { 'Content-Type': img.type, 'Cache-Control': 'private, max-age=3600' } });
+      } catch {
+        // No picture: a transparent pixel, so the initials underneath show (and nothing is logged as an error).
+        return new Response(BLANK_PNG, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=600' } });
+      }
     }
     if (rel === '/' || rel === '') rel = '/index.html';
     const file = path.normalize(path.join(PUBLIC, rel));
@@ -333,8 +393,10 @@ function updateTray() {
   if (!tray) return;
   const login = process.platform === 'win32' ? 'Windows' : 'login';
   tray.setToolTip(ui.count ? `Daddy Review · ${ui.count} to review` : 'Daddy Review');
+  const up = updater ? updater.status() : {};
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: ui.count ? `${ui.count} PR${ui.count > 1 ? 's' : ''} to review` : 'Nothing to review', enabled: false },
+    ...(up.status === 'ready' ? [{ label: `Restart to update (v${up.version})`, click: () => updater.install() }] : []),
     { type: 'separator' },
     { label: 'Open Daddy Review', click: showMain },
     { label: 'Mini window', click: openMini },
@@ -421,6 +483,8 @@ function quit() {
   quitting = true;
   app.quit();
 }
+
+app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('before-quit', () => {
   quitting = true;

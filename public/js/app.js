@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { $, patch, store, tomorrowMorning, VOTE_META } from './util.js';
+import { $, patch, store, tomorrowMorning, VOTE_META, failedImages, icon } from './util.js';
 import * as V from './views.js';
 import { toast, confetti, notifyEvent, setBadge, canNotify } from './effects.js';
 import { createPip } from './pip.js';
@@ -19,6 +19,7 @@ const S = {
   busy: new Set(),
   skipped: new Set(),
   menu: null,
+  filter: '',
   settingsOpen: false,
   shortcuts: false,
   assistantOpen: params.get('action') === 'next',
@@ -169,7 +170,16 @@ function render() {
   }
   if (!root.querySelector('#list')) {
     root._html = null;
-    root.innerHTML = '<div id="top"></div><main class="main"><div id="hero"></div><div id="setup"></div><div id="tabs"></div><section id="list"></section></main><div id="drawer"></div><div id="modal"></div><div id="assistant" class="assistant"></div>';
+    root.innerHTML = `<div id="top"></div><main class="main"><div id="hero"></div><div id="setup"></div>
+      <div class="toolbar"><div id="tabs"></div><label class="search" title="Search (/)">${icon('search')}<input id="filter" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search pull requests"></label></div>
+      <section id="list"></section></main><div id="drawer"></div><div id="modal"></div><div id="assistant" class="assistant"></div>`;
+    const input = $('#filter');
+    input.value = S.filter;
+    input.addEventListener('input', () => {
+      S.filter = input.value.trim();
+      S.expanded = null;
+      render();
+    });
   }
   if (!V.visibleItems(S).some((i) => i.key === S.selectedKey)) S.selectedKey = null;
   patch($('#top'), V.topbar(S));
@@ -292,10 +302,10 @@ async function toggleDetails(key) {
   }
 }
 
-async function signin() {
+async function signin(body) {
   S.signinError = null;
   try {
-    const { url } = await api('POST', '/api/login');
+    const { url } = await api('POST', '/api/login', body);
     if (!url) {
       // Desktop app: your browser opened at Microsoft; we pick it up when you're back.
       S.signingIn = true;
@@ -320,7 +330,19 @@ async function signin() {
 }
 
 const actions = {
-  signin,
+  signin: () => signin(),
+  'signin-personal': () => signin({ personal: true }),
+  async 'update-check'() {
+    try { setData(await api('POST', '/api/update/check')); } catch (e) { toast(e.message, { kind: 'bad' }); }
+  },
+  async 'update-install'() {
+    try {
+      await api('POST', '/api/update/install');
+      if (S.data.app.update && S.data.app.update.status === 'ready') toast('Restarting into the new version…');
+    } catch (e) {
+      toast(e.message, { kind: 'bad' });
+    }
+  },
   'signin-cancel': () => { S.signingIn = false; render(); },
   async 'use-azcli'() {
     S.data.auth.checking = true;
@@ -472,6 +494,14 @@ function bindEvents(doc, win) {
   });
   doc.addEventListener('keydown', onKey);
   win.addEventListener('focus', onReturn);
+  // A profile picture that can't load: remember it and show the initials underneath.
+  doc.addEventListener('error', (e) => {
+    const img = e.target;
+    if (img && img.classList && img.classList.contains('av-img')) {
+      failedImages.add(img.dataset.src);
+      img.remove();
+    }
+  }, true);
 }
 
 function moveSelection(delta) {
@@ -484,7 +514,19 @@ function moveSelection(delta) {
 }
 
 function onKey(e) {
+  if (e.target.id === 'filter' && e.key === 'Escape') {
+    e.target.value = '';
+    S.filter = '';
+    e.target.blur();
+    render();
+    return;
+  }
   if (e.target.closest && e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === '/' && S.data && S.data.auth.signedIn && !S.mini) {
+    e.preventDefault();
+    $('#filter')?.focus();
+    return;
+  }
   // Enter/Space on a focused button should press that button.
   if ((e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('button, a, summary')) return;
   if (!S.data || !S.data.auth.signedIn) return;

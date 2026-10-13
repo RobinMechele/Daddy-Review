@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS = {
   workEnd: 18,
   useAzCli: true,
   tenant: 'organizations',
+  quietHours: false,
+  hotkey: true,
 };
 const POLL_CHOICES = [1, 2, 3, 5, 10, 15];
 const NUDGE_EVERY = 2 * 36e5;
@@ -54,6 +56,7 @@ class Inbox {
       events: Array.isArray(saved.events) ? saved.events : [],
       seq: Number(saved.seq) || 0,
       lastNudgeAt: Number(saved.lastNudgeAt) || 0,
+      lastRecap: saved.lastRecap || null,
     };
     this.items = new Map();
     this.orgItems = new Map();
@@ -167,7 +170,7 @@ class Inbox {
     });
     for (const org of [...this.orgItems.keys()]) if (!enabled.includes(org)) this.orgItems.delete(org);
     const items = [...this.orgItems.values()].flat();
-    await this.loadSizes(items);
+    await Promise.all([this.loadSizes(items), this.loadComments(items)]);
 
     const okOrgs = enabled.filter((o) => !errors[o]);
     const baselineOrgs = new Set(okOrgs.filter((o) => !this.state.baselined[o]));
@@ -185,6 +188,7 @@ class Inbox {
     for (const r of reviews) this.addReview(r);
     for (const e of events) this.emit(e);
     this.maybeNudge();
+    this.maybeRecap();
     this.save();
   }
 
@@ -272,14 +276,35 @@ class Inbox {
     for (const k of this.sizeCache.keys()) if (!keep.has(k)) this.sizeCache.delete(k);
   }
 
+  /** Comment threads on your own PRs: what waits for your answer, and new comments. */
+  async loadComments(items) {
+    const mine = items.filter((i) => i.mine);
+    await mapLimit(mine, 4, async (it) => {
+      const meta = this.orgMeta.get(it.org);
+      if (!meta) return;
+      try {
+        it.comments = logic.summarizeThreads(await this.ado.threads(it), meta.myId);
+      } catch (e) {
+        if (e.code === 'AUTH_REQUIRED') throw e;
+      }
+    });
+  }
+
   // ---- events, reviews, nudges ------------------------------------------------
+
+  inWorkHours(now = Date.now()) {
+    const d = new Date(now);
+    const hour = d.getHours() + d.getMinutes() / 60;
+    return d.getDay() !== 0 && d.getDay() !== 6 && hour >= this.settings.workStart && hour < this.settings.workEnd;
+  }
 
   emit(e) {
     const evt = { id: ++this.state.seq, at: Date.now(), ...e };
     this.state.events.push(evt);
     if (this.state.events.length > 60) this.state.events.splice(0, this.state.events.length - 60);
     this.save();
-    if (this.settings.desktopPopups && evt.title && !this.suppressToast()) this.queueToast(evt);
+    const quiet = this.settings.quietHours && !this.inWorkHours(evt.at);
+    if (this.settings.desktopPopups && evt.title && !quiet && !this.suppressToast()) this.queueToast(evt);
     return evt;
   }
 
@@ -307,10 +332,7 @@ class Inbox {
 
   maybeNudge(now = Date.now()) {
     const s = this.settings;
-    if (!s.nudges) return null;
-    const d = new Date(now);
-    const hour = d.getHours() + d.getMinutes() / 60;
-    if (d.getDay() === 0 || d.getDay() === 6 || hour < s.workStart || hour >= s.workEnd) return null;
+    if (!s.nudges || !this.inWorkHours(now)) return null;
     if (now - this.startedAt < 10 * 60e3) return null;
     const last = this.state.reviews.length ? this.state.reviews[this.state.reviews.length - 1].at : 0;
     if (now - Math.max(last, this.state.lastNudgeAt) < NUDGE_EVERY) return null;
@@ -327,6 +349,26 @@ class Inbox {
       prTitle: next.title,
       title: `${n} PR${n > 1 ? 's' : ''} waiting for you`,
       body: `Next: ${next.title}${next.minutes ? ` · ~${next.minutes} min` : ''}`,
+    });
+  }
+
+  /** Friday, near the end of the work day: a short recap of the week. */
+  maybeRecap(now = Date.now()) {
+    const s = this.settings;
+    if (!s.nudges) return null;
+    const d = new Date(now);
+    const hour = d.getHours() + d.getMinutes() / 60;
+    if (d.getDay() !== 5 || hour < Math.max(s.workStart, s.workEnd - 1.5)) return null;
+    const r = logic.weekRecap(this.state.reviews, now);
+    if (this.state.lastRecap === r.week) return null;
+    this.state.lastRecap = r.week;
+    this.save();
+    if (!r.count) return null;
+    const streak = this.stats(now).streak;
+    return this.emit({
+      type: 'recap',
+      title: `Your week: ${r.count} review${r.count > 1 ? 's' : ''} 🎉`,
+      body: [streak > 1 ? `${streak}-day streak` : null, r.bestCount > 1 ? `best day ${r.bestDay} (${r.bestCount})` : null].filter(Boolean).join(' · ') || 'Have a good weekend!',
     });
   }
 
@@ -440,7 +482,7 @@ class Inbox {
     if (!it) throw new HttpError(404, 'That PR is no longer active');
     const [files, threads] = await Promise.all([
       it.files ? Promise.resolve(it.files) : this.ado.changedFiles(it).catch(() => null),
-      this.ado.threads(it).catch(() => null),
+      this.ado.threads(it).then(logic.threadDetails).catch(() => null),
     ]);
     return {
       key,
@@ -454,7 +496,7 @@ class Inbox {
   updateSettings(patch = {}) {
     const s = this.settings;
     const bool = (k) => { if (typeof patch[k] === 'boolean') s[k] = patch[k]; };
-    ['includeTeams', 'desktopPopups', 'nudges', 'useAzCli'].forEach(bool);
+    ['includeTeams', 'desktopPopups', 'nudges', 'useAzCli', 'quietHours', 'hotkey'].forEach(bool);
     const int = (k, lo, hi) => {
       const v = Number(patch[k]);
       if (patch[k] !== undefined && Number.isInteger(v) && v >= lo && v <= hi) s[k] = v;

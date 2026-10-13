@@ -92,9 +92,13 @@ function seed(now = Date.now()) {
   add('fabrikam-labs', 312, 'ml-pipeline', P.mia, 8, 6, 'Speed up feature extraction with Arrow', [R(P.me, 0, { isRequired: true })], { labels: ['perf'] });
   add('fabrikam-labs', 309, 'ml-pipeline', P.noah, 30, 2, 'Fix flaky test in tokenizer', [R(P.me)], { conflicts: true });
   // Created by me
-  add('contoso', 1200, 'payments-api', P.me, 22, 6, 'Add idempotency keys to refunds endpoint', [R(P.priya, 10), R(P.jonas, 0, { isRequired: true }), R(TEAMS.payments, 0, { team: true })]);
+  add('contoso', 1200, 'payments-api', P.me, 22, 6, 'Add idempotency keys to refunds endpoint', [R(P.priya, 10), R(P.jonas, 0, { isRequired: true }), R(TEAMS.payments, 0, { team: true })],
+    { threads: [{ by: P.jonas, text: 'Should the idempotency key expire after 24h?', status: 'active' }] });
   add('contoso', 1184, 'shared-libs', P.me, 70, 23, 'Upgrade to .NET 9', [R(P.lucas, -5), R(P.noah, 5)],
-    { threads: [{ by: P.lucas, text: 'Build agents still have the .NET 8 SDK only, can we bump the image first?', status: 'active' }] });
+    { threads: [
+      { by: P.lucas, text: 'Build agents still have the .NET 8 SDK only, can we bump the image first?', status: 'active' },
+      { by: P.noah, text: 'Nit: can we keep the old target for the test project?', status: 'active', replies: [{ by: P.me, text: 'Done in the last push.' }] },
+    ] });
   add('contoso', 1206, 'infra', P.me, 4, 2, 'Docs: on-call runbook', [R(P.mia, 10, { isRequired: true })]);
   return prs;
 }
@@ -143,16 +147,18 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
       description: pr.description,
       isDraft: pr.isDraft,
       creationDate: pr.creationDate,
-      createdBy: { ...pr.author, uniqueName: `${pr.author.id}@contoso.com` },
+      createdBy: { ...pr.author, uniqueName: `${pr.author.id}@contoso.com`, _links: { avatar: { href: avatarUrl(pr.org, pr.author.id) } } },
       sourceRefName: `refs/heads/${pr.author.displayName.split(' ')[0].toLowerCase()}/${pr.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30)}`,
       targetRefName: 'refs/heads/main',
       mergeStatus: pr.mergeStatus,
       lastMergeSourceCommit: { commitId: pr.commit },
       labels: pr.labels.map((name) => ({ name, active: true })),
-      reviewers: pr.reviewers.map((r) => ({ ...r })),
+      reviewers: pr.reviewers.map((r) => ({ ...r, imageUrl: avatarUrl(pr.org, r.id) })),
       repository: { id: `repo-${pr.repo}`, name: pr.repo, project: { id: `proj-${repo.project}`, name: repo.project } },
     };
   };
+
+  const avatarUrl = (org, id) => `${base()}/ado/${encodeURIComponent(org)}/_apis/GraphProfile/MemberAvatars/${encodeURIComponent(id)}`;
 
   const findPr = (org, id) => prs.find((p) => p.org === org && p.pullRequestId === Number(id));
 
@@ -170,6 +176,11 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
         commit: rid(), iterations: 1, status: 'active', isDraft: false, mergeStatus: 'succeeded', description: '', labels: [], threads: [],
       };
       prs.push(pr);
+      return pr;
+    },
+    comment(org, id, who, text) {
+      const pr = findPr(org, id);
+      pr.threads.push({ by: PEOPLE[who], text, status: 'active' });
       return pr;
     },
     vote(org, id, who, vote) {
@@ -272,6 +283,17 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
     m = /^\/ado\/([^/]+)\/_apis\/connectionData$/.exec(p);
     if (m) return send(res, 200, { authenticatedUser: { id: ME.id, providerDisplayName: ME.name } });
 
+    m = /^\/ado\/[^/]+\/_apis\/GraphProfile\/MemberAvatars\/([^/]+)$/.exec(p);
+    if (m) {
+      const id = decodeURIComponent(m[1]);
+      const person = Object.values(PEOPLE).find((x) => x.id === id);
+      // Emma has no picture: the app falls back to initials.
+      if (!person || id === PEOPLE.emma.id) return send(res, 404, { message: 'no avatar' });
+      let h = 0;
+      for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) % 360;
+      return send(res, 200, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h},55%,62%)"/><stop offset="1" stop-color="hsl(${(h + 50) % 360},60%,42%)"/></linearGradient></defs><rect width="64" height="64" fill="url(#b)"/><circle cx="32" cy="25" r="11" fill="#fff" fill-opacity=".92"/><path d="M11 60c3-13 12-19 21-19s18 6 21 19z" fill="#fff" fill-opacity=".92"/></svg>`, { 'Content-Type': 'image/svg+xml' });
+    }
+
     m = /^\/vssps\/([^/]+)\/_apis\/identities$/.exec(p);
     if (m) {
       if (qp('identityIds') === ME.id && qp('queryMembership') === 'Direct') {
@@ -306,7 +328,18 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
         return send(res, 200, {
           value: [
             { id: 1, status: 'unknown', comments: [{ commentType: 'system', content: 'Policy check passed' }] },
-            ...pr.threads.map((t, i) => ({ id: i + 2, status: t.status, isDeleted: false, comments: [{ commentType: 'text', content: t.text, author: t.by }] })),
+            ...pr.threads.map((t, i) => ({
+              id: i + 2,
+              status: t.status,
+              isDeleted: false,
+              comments: [{ by: t.by, text: t.text }, ...(t.replies || [])].map((c, j) => ({
+                id: j + 1,
+                commentType: 'text',
+                content: c.text,
+                author: { id: c.by.id, displayName: c.by.displayName },
+                publishedDate: new Date(Date.now() - (60 - i * 5 - j) * 60000).toISOString(),
+              })),
+            })),
           ],
         });
       }

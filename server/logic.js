@@ -9,6 +9,8 @@ const VOTES = [10, 5, 0, -5, -10];
 const FEEDBACK = { 10: 'approved', 5: 'approved with suggestions', [-5]: 'is waiting for you', [-10]: 'rejected' };
 
 const shortRef = (ref) => String(ref || '').replace(/^refs\/heads\//, '');
+/** Profile picture URL of an Azure DevOps identity (needs the user's token to load). */
+const imageOf = (ident) => (ident && ((ident._links && ident._links.avatar && ident._links.avatar.href) || ident.imageUrl)) || null;
 const cleanName = (name) => String(name || '').replace(/^\[[^\]]*\]\\/, '');
 
 function webUrl(base, org, project, repo, id) {
@@ -26,6 +28,7 @@ function toItem(pr, ctx) {
     team: !!r.isContainer,
     declined: !!r.hasDeclined,
     me: !!ctx.myId && r.id === ctx.myId,
+    image: r.isContainer ? null : imageOf(r),
   }));
   const me = reviewers.find((r) => r.me);
   const teams = reviewers.filter((r) => ctx.groups && ctx.groups.has(r.id));
@@ -42,7 +45,7 @@ function toItem(pr, ctx) {
     projectId: project.id || project.name || '',
     repo: repo.name || '',
     repoId: repo.id || '',
-    author: { id: author.id || '', name: author.displayName || 'Unknown' },
+    author: { id: author.id || '', name: author.displayName || 'Unknown', image: imageOf(author) },
     created: pr.creationDate || new Date().toISOString(),
     draft: !!pr.isDraft,
     conflicts: pr.mergeStatus === 'conflicts',
@@ -123,6 +126,45 @@ function score(item, now = Date.now()) {
   return { score: Math.round(s), reasons };
 }
 
+const isHuman = (c) => c && !c.isDeleted && c.commentType !== 'system';
+
+/** Comment threads of a PR as seen by `myId`: what's open, and what waits for your answer. */
+function summarizeThreads(threads, myId) {
+  const human = (threads || []).filter((t) => t && !t.isDeleted && Array.isArray(t.comments) && isHuman(t.comments[0]));
+  const open = human.filter((t) => t.status === 'active' || t.status === 'pending');
+  const lastOf = (t) => t.comments.filter(isHuman).pop();
+  const waiting = open.filter((t) => {
+    const last = lastOf(t);
+    return last && last.author && last.author.id !== myId;
+  });
+  const fromOthers = human.flatMap((t) => t.comments.filter((c) => isHuman(c) && c.author && c.author.id !== myId));
+  fromOthers.sort((a, b) => Date.parse(b.publishedDate || 0) - Date.parse(a.publishedDate || 0));
+  return {
+    open: open.length,
+    total: human.length,
+    waitingOnYou: waiting.length,
+    fromOthers: fromOthers.length,
+    lastBy: fromOthers.length ? (fromOthers[0].author.displayName || null) : null,
+  };
+}
+
+/** Open threads for the details panel. */
+function threadDetails(threads) {
+  const human = (threads || []).filter((t) => t && !t.isDeleted && Array.isArray(t.comments) && isHuman(t.comments[0]));
+  const active = human.filter((t) => t.status === 'active' || t.status === 'pending');
+  return {
+    total: human.length,
+    active: active.length,
+    latest: active.slice(-4).reverse().map((t) => ({
+      by: (t.comments[0].author && t.comments[0].author.displayName) || '',
+      image: imageOf(t.comments[0].author),
+      text: String(t.comments[0].content || '').slice(0, 220),
+      file: (t.threadContext && t.threadContext.filePath) || null,
+      replies: t.comments.length - 1,
+    })),
+  };
+}
+
 function event(type, it, extra = {}) {
   const base = { type, key: it.key, org: it.org, prTitle: it.title, url: it.url };
   if (type === 'new') return { ...base, title: 'New review request', body: `${it.title} · ${it.author.name}`, ...extra };
@@ -147,7 +189,11 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
       votedCommit: (p && p.votedCommit) || null,
       resetByPush: !!(p && p.resetByPush),
     };
-    if (it.mine) s.votes = Object.fromEntries(it.reviewers.filter((r) => !r.team).map((r) => [r.id, r.vote]));
+    if (it.mine) {
+      s.votes = Object.fromEntries(it.reviewers.filter((r) => !r.team).map((r) => [r.id, r.vote]));
+      // Comments from others on your PR (kept from before when this round couldn't load them).
+      s.othersComments = it.comments ? it.comments.fromOthers : p ? p.othersComments : undefined;
+    }
     const fresh = !baselineOrgs.has(it.org);
 
     if (!p) {
@@ -172,6 +218,10 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
     } else {
       if (c.state === 'todo' && p.state === 'draft') events.push(event('new', it));
       else if (c.state === 'todo' && c.updated && p.state !== 'todo') events.push(event('updated', it));
+      if (it.mine && it.comments && typeof p.othersComments === 'number' && it.comments.fromOthers > p.othersComments) {
+        const who = it.comments.lastBy || 'Someone';
+        events.push(event('comment', it, { title: `${who} commented on your PR`, body: it.title }));
+      }
       if (it.mine && p.votes) {
         for (const r of it.reviewers) {
           if (r.team || r.vote === 0 || r.vote === (p.votes[r.id] || 0)) continue;
@@ -234,4 +284,39 @@ function stats(reviews, now = Date.now(), goal = 5) {
   };
 }
 
-module.exports = { VOTES, toItem, classify, sizeInfo, estimate, score, diff, stats, shortRef, cleanName, webUrl };
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function mondayOf(t) {
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d;
+}
+
+/** This week's reviews (since Monday) for the Friday recap. */
+function weekRecap(reviews, now = Date.now()) {
+  const monday = mondayOf(now);
+  const seen = new Set();
+  const perDay = {};
+  for (const r of reviews) {
+    if (r.at < monday.getTime() || r.at > now) continue;
+    const day = new Date(r.at).getDay();
+    const k = `${day}:${r.key}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    perDay[day] = (perDay[day] || 0) + 1;
+  }
+  const count = Object.values(perDay).reduce((a, b) => a + b, 0);
+  const best = Object.entries(perDay).sort((a, b) => b[1] - a[1])[0];
+  return {
+    week: `${monday.getFullYear()}-${monday.getMonth() + 1}-${monday.getDate()}`,
+    count,
+    bestDay: best ? DAY_NAMES[Number(best[0])] : null,
+    bestCount: best ? best[1] : 0,
+  };
+}
+
+module.exports = {
+  VOTES, toItem, classify, sizeInfo, estimate, score, diff, stats, weekRecap,
+  summarizeThreads, threadDetails, shortRef, cleanName, webUrl, imageOf,
+};

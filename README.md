@@ -16,7 +16,9 @@ A desktop app that helps you do more pull request reviews on **Azure DevOps**. I
 
 > The installer isn't code-signed yet. Windows may show *"Windows protected your PC"*: click **More info → Run anyway**. On macOS, right-click the app → **Open** the first time.
 
-Then click **Sign in with Microsoft**: your browser opens, you pick your work account, and you're done. If you've used `az login` on this PC, it signs you in by itself.
+Then click **Sign in with Microsoft**: your browser opens, you pick your work account, and you're done. If you've used `az login` on this PC, it signs you in by itself. A personal Microsoft account works too (*Personal Microsoft account?* under the button).
+
+**Updates install themselves**: Daddy Review checks GitHub Releases every few hours, downloads new versions in the background and shows *Update ready*. Restart when it suits you, or it installs the next time the app quits. (macOS: it tells you a new version is out.)
 
 ## What it does
 
@@ -25,7 +27,10 @@ Then click **Sign in with Microsoft**: your browser opens, you pick your work ac
 | **Next up** | Ranks your queue: required reviews, quick wins (few files), PRs updated since your vote and long-waiting ones go first. Shows size (XS–XL) and an estimated review time. |
 | **One-click votes** | Approve, approve with suggestions, wait for author, reject or snooze right from the list. Every vote has *Undo*. |
 | **Review flow** | *Review now* opens the PR in your browser. When you come back, the assistant asks how it went, records your vote and hands you the next one. |
-| **Popups** | Windows notifications for new review requests, new pushes after your review, votes on *your* PRs, and a nudge when PRs wait too long (work hours only). Click one to open the PR. |
+| **Popups** | Windows notifications for new review requests, new pushes after your review, votes and comments on *your* PRs, a nudge when PRs wait too long and a Friday recap. Click one to open the PR. Optionally only during work hours. |
+| **Comments on your PRs** | Your own PRs show which comment threads are waiting for your answer. |
+| **Search** | Press `/` and type: title, repo, author, branch or label. |
+| **Shortcut** | `Ctrl+Alt+R` shows or hides Daddy Review from anywhere. |
 | **Lives in the tray** | Closing the window keeps it watching in the background; the taskbar shows how many PRs are waiting. Starts with Windows (switch off in Settings or the tray menu). |
 | **Mini window** | ⧉ opens a small always-on-top window with your next PR, so reviews stay in sight while you work. |
 | **All orgs, teams too** | Finds all your Azure DevOps organizations and includes PRs assigned to your teams. |
@@ -36,7 +41,7 @@ Then click **Sign in with Microsoft**: your browser opens, you pick your work ac
   <img src="docs/mini.png" width="28%" alt="Always-on-top mini window">
 </p>
 
-**Keyboard:** `J`/`K` move · `Enter` details · `O` open · `A` approve · `W` wait · `S` snooze · `N` next · `R` refresh · `P` mini window · `?` all shortcuts.
+**Keyboard:** `/` search · `J`/`K` move · `Enter` details · `O` open · `A` approve · `W` wait · `S` snooze · `N` next · `R` refresh · `P` mini window · `?` all shortcuts.
 
 ## Sign-in without a PAT
 
@@ -68,10 +73,10 @@ npm run test:app   # drives the real desktop app (on Linux: xvfb-run -a npm run 
 npm run dist       # build the installer for this OS into dist/
 ```
 
-Every push builds the Windows, macOS and Linux installers in GitHub Actions. Pushing a tag like `v1.0.1` also publishes them as a GitHub Release.
+Every push builds the Windows, macOS and Linux installers in GitHub Actions, installs the Windows one and drives it (including a self-update). To publish a release: bump `version` in `package.json`, then **Actions → Build desktop app → Run workflow** with *release* set to e.g. `v1.2.0` (or push that tag). Installed apps pick it up automatically.
 
 ```
-electron/  main.js (window, tray, notifications, sign-in, autostart) · preload.js (the UI's only bridge)
+electron/  main.js (window, tray, notifications, sign-in, autostart, shortcut) · updater.js · preload.js (the UI's only bridge)
 server/    core.js (engine API) · auth.js (Microsoft / Azure CLI) · loopback.js (desktop sign-in)
            ado.js (Azure DevOps REST) · inbox.js (polling, events, stats) · logic.js (ranking, diffing)
            index.js (browser dev mode, used by the tests)

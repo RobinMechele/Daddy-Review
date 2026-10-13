@@ -202,21 +202,38 @@ class Ado {
       .map((c) => ({ path: c.item.path, type: String(c.changeType || 'edit') }));
   }
 
+  /** All comment threads of a PR (raw). */
   async threads(item) {
     const r = await this.get(`${this.prBase(item)}/threads?api-version=7.1`, item.org);
-    const human = ((r && r.value) || []).filter((t) =>
-      !t.isDeleted && Array.isArray(t.comments) && t.comments.length && t.comments[0].commentType !== 'system');
-    const active = human.filter((t) => t.status === 'active' || t.status === 'pending');
-    return {
-      total: human.length,
-      active: active.length,
-      latest: active.slice(-4).reverse().map((t) => ({
-        by: (t.comments[0].author && t.comments[0].author.displayName) || '',
-        text: String(t.comments[0].content || '').slice(0, 220),
-        file: (t.threadContext && t.threadContext.filePath) || null,
-        replies: t.comments.length - 1,
-      })),
-    };
+    return (r && r.value) || [];
+  }
+
+  /** Is this an Azure DevOps host we may send your token to? */
+  isAdoHost(url) {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return false;
+    }
+    const own = [this.config.ADO_BASE, this.config.VSSPS_BASE, this.config.VSSPS_APP].map((b) => new URL(b).host);
+    if (own.includes(u.host)) return true;
+    return u.protocol === 'https:' && /(^|\.)(dev\.azure\.com|visualstudio\.com)$/i.test(u.hostname);
+  }
+
+  /** A profile picture from Azure DevOps (they need your sign-in to load). */
+  async image(url) {
+    if (!this.isAdoHost(url)) throw new AdoError(400, 'Not an Azure DevOps image');
+    const u = new URL(url);
+    const org = /\.visualstudio\.com$/i.test(u.hostname) ? u.hostname.split('.')[0] : decodeURIComponent(u.pathname.split('/')[1] || '');
+    const token = await this.auth.getToken(this.orgTenant.get(org));
+    const res = await this.fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'image/*', 'X-TFS-FedAuthRedirect': 'Suppress' },
+      signal: AbortSignal.timeout(15000),
+    });
+    const type = (res.headers.get('content-type') || '').split(';')[0].trim();
+    if (!res.ok || !/^image\//.test(type)) throw new AdoError(res.status || 404, 'No image');
+    return { type, data: Buffer.from(await res.arrayBuffer()) };
   }
 
   vote(item, reviewerId, vote) {

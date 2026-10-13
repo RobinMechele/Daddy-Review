@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { createCore } = require('./core');
-const { resultPage, cleanSignInError } = require('./pages');
+const { resultPage, cleanSignInError, BLANK_PNG } = require('./pages');
 const { HttpError } = require('./util');
 
 const MIME = {
@@ -118,6 +118,14 @@ function createApp(overrides = {}) {
     if (!hosts.has(String(req.headers.host || ''))) return send(res, 403, 'Forbidden host');
     const url = new URL(req.url, `http://localhost:${config.PORT}`);
     if (url.pathname.startsWith('/api/')) return handleApi(req, res, url);
+    if (url.pathname === '/avatar') {
+      try {
+        const img = await core.image(String(url.searchParams.get('u')));
+        return send(res, 200, img.data, { 'Content-Type': img.type, 'Cache-Control': 'private, max-age=3600' });
+      } catch {
+        return send(res, 200, BLANK_PNG, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=600' });
+      }
+    }
     if (url.pathname === '/' && (url.searchParams.has('code') || url.searchParams.has('error'))) return handleCallback(req, res, url);
     return serveStatic(req, res, url);
   }

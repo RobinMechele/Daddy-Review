@@ -45,15 +45,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # latest*.yml + .blockmap are what installed apps read to update themselves.
           - os: windows-latest
             target: --win
-            files: dist/*.exe
+            files: |
+              dist/*.exe
+              dist/*.exe.blockmap
+              dist/latest.yml
           - os: macos-latest
             target: --mac
-            files: dist/*.dmg
+            files: |
+              dist/*.dmg
+              dist/latest-mac.yml
           - os: ubuntu-latest
             target: --linux
-            files: dist/*.AppImage
+            files: |
+              dist/*.AppImage
+              dist/latest-linux.yml
     runs-on: ${{ matrix.os }}
     # macOS builds are unsigned and best-effort; Windows is the main target.
     continue-on-error: ${{ matrix.os == 'macos-latest' }}
@@ -106,6 +114,8 @@ jobs:
           if (-not $lnk) { throw 'No Start menu shortcut' }
           Write-Host "Start menu shortcut: $($lnk.FullName)"
           "DADDY_APP_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # The test also offers this installer as a newer version to check self-updating.
+          "DADDY_UPDATE_TEST_FILE=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Drive the installed app
         run: npm run test:app
       - uses: actions/upload-artifact@v4

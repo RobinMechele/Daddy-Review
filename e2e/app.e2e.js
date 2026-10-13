@@ -10,6 +10,8 @@
  * Screenshots go to e2e/screenshots/.
  */
 const { _electron: electron } = require('playwright-core');
+const http = require('http');
+const crypto = require('crypto');
 const assert = require('node:assert/strict');
 const path = require('path');
 const os = require('os');
@@ -53,6 +55,7 @@ async function main() {
     assert.equal(await win.evaluate(() => typeof window.require), 'undefined', 'no Node.js in the page');
     assert.ok(await win.evaluate(() => document.documentElement.classList.contains('native')));
     await win.screenshot({ path: path.join(SHOTS, 'app-signin.png') });
+    assert.ok(await win.isVisible('[data-act="signin-personal"]'), 'personal account option');
     step('opens on the sign-in screen, sandboxed');
 
     await win.click('[data-act="signin"]');
@@ -62,9 +65,35 @@ async function main() {
     assert.deepEqual(counts, ['7', '1', '3', '3']);
     step('signs in and loads the review queue');
 
+    await win.waitForFunction(() => [...document.querySelectorAll('#list img.av-img')].some((i) => i.complete && i.naturalWidth > 1), null, { timeout: 10000 });
+    step('shows Azure DevOps profile pictures');
+
     await win.click('#list .card:nth-child(3) .card-row');
     await win.waitForSelector('.details .files li');
     step('shows PR details');
+
+    await win.fill('#filter', 'tokenizer');
+    await win.waitForFunction(() => document.querySelectorAll('#list .cards > .card').length === 1);
+    assert.match(await win.textContent('#list .card-title'), /tokenizer/i);
+    await win.fill('#filter', 'zzz-nothing');
+    await win.waitForSelector('text=No matches');
+    await win.fill('#filter', '');
+    await win.waitForFunction(() => document.querySelectorAll('#list .cards > .card').length > 1);
+    step('search filters the list');
+
+    await win.click('.tab[data-tab="mine"]');
+    await win.waitForSelector('#list .chip.accent');
+    const answer = await win.$$eval('#list .chip.accent', (els) => els.map((e) => e.textContent.trim()));
+    assert.ok(answer.includes('1 to answer'), `comments waiting on you: ${answer}`);
+    await win.click('.tab[data-tab="todo"]');
+    step('your PRs show comments waiting for your answer');
+
+    await win.click('.top-actions [data-act="settings"]');
+    await win.waitForSelector('.drawer');
+    assert.ok(await win.isVisible('.drawer [data-setting="quietHours"]'));
+    assert.ok(await win.isVisible('.drawer [data-setting="hotkey"]'));
+    await win.click('.drawer [data-act="close-settings"]');
+    step('settings: work-hours-only popups and global shortcut');
 
     await win.click('.hero [data-act="vote"]');
     await win.waitForSelector('.toast.in');
@@ -107,9 +136,37 @@ async function main() {
   }
 }
 
+/**
+ * A local update feed offering "version 99.0.0" (the file in DADDY_UPDATE_TEST_FILE),
+ * so we can see the installed app find, download and verify an update.
+ */
+async function startUpdateFeed(file) {
+  const data = fs.readFileSync(file);
+  const name = 'Daddy-Review-Setup-99.0.0.exe';
+  const sha512 = crypto.createHash('sha512').update(data).digest('base64');
+  const yml = `version: 99.0.0\nfiles:\n  - url: ${name}\n    sha512: ${sha512}\n    size: ${data.length}\npath: ${name}\nsha512: ${sha512}\nreleaseDate: '2026-10-13T00:00:00.000Z'\n`;
+  const server = http.createServer((req, res) => {
+    const p = new URL(req.url, 'http://x').pathname;
+    if (/^\/latest(-linux|-mac)?\.yml$/.test(p)) {
+      res.writeHead(200, { 'Content-Type': 'text/yaml' });
+      return res.end(yml);
+    }
+    if (p === `/${name}`) {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length });
+      return res.end(data);
+    }
+    res.writeHead(404);
+    return res.end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${server.address().port}/`, close: () => server.close() };
+}
+
 /** The installed app without --demo: a first start, like after running the installer. */
 async function firstStart() {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'daddy-first-'));
+  const feed = process.env.DADDY_UPDATE_TEST_FILE ? await startUpdateFeed(process.env.DADDY_UPDATE_TEST_FILE) : null;
+  if (feed) process.env.DADDY_UPDATE_URL = feed.url;
   const app = await launch([], userData);
   try {
     const win = await app.firstWindow();
@@ -129,7 +186,24 @@ async function firstStart() {
       console.log('  ✓ "start with Windows" is on after the first run');
       await app.evaluate(({ app: a }) => a.setLoginItemSettings({ openAtLogin: false, args: ['--hidden'] }));
     }
+    if (feed) {
+      // Self-updating builds (Windows, AppImage) download it; others just report it.
+      const selfUpdate = process.platform === 'win32' || !!process.env.APPIMAGE;
+      const want = selfUpdate ? 'ready' : 'available';
+      await win.evaluate(() => window.daddyNative.api('POST', '/api/update/check'));
+      const deadline = Date.now() + 180000;
+      let st = null;
+      while (Date.now() < deadline) {
+        st = (await win.evaluate(() => window.daddyNative.api('GET', '/api/state'))).data.app.update;
+        if (st.status === want || st.status === 'error') break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      assert.equal(st.status, want, `update status: ${JSON.stringify(st)}`);
+      assert.equal(st.version, '99.0.0');
+      console.log(`  ✓ finds a new version and ${selfUpdate ? 'downloads + verifies it (ready to restart)' : 'offers the download'}`);
+    }
   } finally {
+    if (feed) feed.close();
     await app.close();
     fs.rmSync(userData, { recursive: true, force: true });
   }

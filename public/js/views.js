@@ -1,11 +1,17 @@
-import { esc, icon, fmtAge, fmtMinutes, initials, hue, firstName, greeting, VOTE_META } from './util.js';
+import { esc, icon, fmtAge, fmtMinutes, initials, hue, firstName, greeting, VOTE_META, failedImages, imageSrc } from './util.js';
 
 const SIZE_TITLE = { XS: '1–2 files', S: '3–5 files', M: '6–15 files', L: '16–40 files', XL: '40+ files' };
 const REASON = { required: 'Required', updated: 'Updated', quick: 'Quick win', old: 'Waiting long' };
 const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
-export const avatar = (name, cls = '') =>
-  `<span class="avatar ${cls}" style="--h:${hue(name)}" title="${esc(name)}">${esc(initials(name))}</span>`;
+/** Initials, with the Azure DevOps profile picture on top when there is one. */
+export const avatar = (name, cls = '', image = null) =>
+  `<span class="avatar ${cls}" style="--h:${hue(name)}" title="${esc(name)}">${esc(initials(name))}${image && !failedImages.has(image) ? `<img class="av-img" src="${esc(imageSrc(image))}" data-src="${esc(image)}" alt="" loading="lazy" decoding="async">` : ''}</span>`;
+
+const myImage = (S) => {
+  for (const it of S.data.inbox.items) for (const r of it.reviewers) if (r.me && r.image) return r.image;
+  return null;
+};
 
 const chip = (html, cls = '', title = '') => `<span class="chip ${cls}"${title ? ` title="${esc(title)}"` : ''}>${html}</span>`;
 
@@ -39,6 +45,11 @@ function weekBars(stats) {
 
 function chipsFor(it) {
   const out = [];
+  if (it.state === 'mine' && it.comments) {
+    const c = it.comments;
+    if (c.waitingOnYou) out.push(chip(`${icon('chat')}${c.waitingOnYou} to answer`, 'accent', 'Comment threads waiting for your reply'));
+    else if (c.open) out.push(chip(`${icon('chat')}${c.open} open`, 'muted', 'Open comment threads'));
+  }
   if (it.updated) out.push(chip(`${icon('spark')}Updated`, 'accent', 'New changes since your review'));
   if (it.required) out.push(chip('Required', 'warn', 'You (or your team) are a required reviewer'));
   if (it.team && !it.direct) out.push(chip(`${icon('users')}${esc(it.team)}`, '', 'Assigned to your team'));
@@ -52,7 +63,7 @@ function reviewersMini(it) {
   const people = it.reviewers.filter((r) => !r.team && !r.me).slice(0, 5);
   return `<span class="stack">${people.map((r) => {
     const v = VOTE_META[r.vote] || VOTE_META[0];
-    return `<span class="stack-item" title="${esc(r.name)}: ${esc(v.label)}">${avatar(r.name, 'xs')}${r.vote ? `<i class="vdot v-${v.cls}">${icon(v.icon)}</i>` : ''}</span>`;
+    return `<span class="stack-item" title="${esc(r.name)}: ${esc(v.label)}">${avatar(r.name, 'xs', r.image)}${r.vote ? `<i class="vdot v-${v.cls}">${icon(v.icon)}</i>` : ''}</span>`;
   }).join('')}</span>`;
 }
 
@@ -113,12 +124,12 @@ function details(it, d) {
           return `<li title="${esc(f.path)}"><span class="ct ct-${esc(f.type.split(',')[0].trim())}"></span><span class="fdir">${esc(parts.slice(-2).join('/'))}/</span>${esc(name)}</li>`;
         }).join('')}${files.length > 8 ? `<li class="muted">+${files.length - 8} more</li>` : ''}</ul></div>
       <div><h4>${icon('chat')}Comments <span>${d.threads ? `${d.threads.active} open` : '?'}</span></h4>
-        ${d.threads && d.threads.latest.length ? `<ul class="threads">${d.threads.latest.map((t) => `<li>${avatar(t.by, 'xs')}<div><b>${esc(t.by)}</b>${t.file ? `<small>${esc(t.file.split('/').pop())}</small>` : ''}<p>${esc(t.text)}</p></div></li>`).join('')}</ul>` : '<p class="muted small">No open comments</p>'}
+        ${d.threads && d.threads.latest.length ? `<ul class="threads">${d.threads.latest.map((t) => `<li>${avatar(t.by, 'xs', t.image)}<div><b>${esc(t.by)}</b>${t.file ? `<small>${esc(t.file.split('/').pop())}</small>` : ''}<p>${esc(t.text)}</p></div></li>`).join('')}</ul>` : '<p class="muted small">No open comments</p>'}
       </div>
       <div><h4>${icon('users')}Reviewers</h4>
         <ul class="people">${people.map((r) => {
           const v = VOTE_META[r.vote] || VOTE_META[0];
-          return `<li>${avatar(r.name, 'xs')}<span>${esc(r.name)}</span>${r.required ? '<em>req</em>' : ''}<i class="v-${v.cls}" title="${esc(v.label)}">${r.vote ? icon(v.icon) : ''}</i></li>`;
+          return `<li>${avatar(r.name, 'xs', r.image)}<span>${esc(r.name)}</span>${r.required ? '<em>req</em>' : ''}<i class="v-${v.cls}" title="${esc(v.label)}">${r.vote ? icon(v.icon) : ''}</i></li>`;
         }).join('') || '<li class="muted">Only you</li>'}</ul>
       </div>
     </div>
@@ -128,7 +139,7 @@ function details(it, d) {
 export function card(it, S) {
   const k = esc(it.key);
   const busy = S.busy.has(it.key);
-  const who = it.state === 'mine' ? reviewersMini(it) : `${avatar(it.author.name, 'xs')}<span class="who">${esc(it.author.name)}</span>`;
+  const who = it.state === 'mine' ? reviewersMini(it) : `${avatar(it.author.name, 'xs', it.author.image)}<span class="who">${esc(it.author.name)}</span>`;
   const meta = [who, `<span class="repo">${esc(it.repo)}</span>`, `<span title="${esc(new Date(it.created).toLocaleString())}">${fmtAge(it.ageH)}</span>`];
   const canVote = it.state !== 'mine';
   const actions = [
@@ -158,13 +169,21 @@ export function topbar(S) {
   return `<header class="topbar">
     ${logo()}
     ${d.app.demo ? '<span class="pill demo" title="Fake Azure DevOps data">Demo</span>' : ''}
+    ${updatePill(d.app.update)}
     <div class="top-actions">
       <button class="icon-btn ${d.inbox.polling || S.refreshing ? 'spin' : ''}" data-act="refresh" title="Refresh (R)">${icon('refresh')}</button>
       <button class="icon-btn" data-act="pip" title="Mini window, always on top">${icon('pip')}</button>
       <button class="icon-btn" data-act="settings" title="Settings">${icon('sliders')}</button>
-      ${name ? `<button class="avatar-btn" data-act="settings" title="${esc(name)}">${avatar(name, 'sm')}</button>` : ''}
+      ${name ? `<button class="avatar-btn" data-act="settings" title="${esc(name)}">${avatar(name, 'sm', myImage(S))}</button>` : ''}
     </div>
   </header>`;
+}
+
+function updatePill(u) {
+  if (!u) return '';
+  if (u.status === 'ready') return `<button class="pill update" data-act="update-install" title="Restart to update to ${esc(u.version)}">${icon('download')}Update ready</button>`;
+  if (u.status === 'available') return `<button class="pill update" data-act="update-install" title="Download ${esc(u.version)}">${icon('download')}New version</button>`;
+  return '';
 }
 
 export function hero(S) {
@@ -196,7 +215,7 @@ export function hero(S) {
     <div class="next">
       <div class="next-label">${icon('target')}Next up</div>
       <div class="next-title" title="${esc(next.title)}">${esc(next.title)}</div>
-      <div class="next-meta">${avatar(next.author.name, 'xs')}${esc(next.author.name)}<span class="sep">·</span>${esc(next.repo)}<span class="sep">·</span>${fmtAge(next.ageH)}
+      <div class="next-meta">${avatar(next.author.name, 'xs', next.author.image)}${esc(next.author.name)}<span class="sep">·</span>${esc(next.repo)}<span class="sep">·</span>${fmtAge(next.ageH)}
         ${next.size ? `<span class="sep">·</span><span class="size-pill s-${next.size.label}">${next.size.label}</span>` : ''}${next.minutes ? `<span class="muted">~${next.minutes} min</span>` : ''}</div>
       ${why ? `<div class="next-why">${why}</div>` : ''}
       <div class="next-actions">
@@ -225,8 +244,14 @@ export function tabs(S) {
   </nav>`;
 }
 
+function matches(it, q) {
+  if (!q) return true;
+  const hay = [it.title, it.repo, it.project, it.org, it.author.name, it.source, String(it.id), ...(it.labels || [])].join(' ').toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+}
+
 export function visibleItems(S) {
-  const items = S.data.inbox.items;
+  const items = S.data.inbox.items.filter((i) => matches(i, S.filter));
   if (S.tab === 'todo') return items.filter((i) => i.state === 'todo' && !i.snoozedUntil);
   const list = items.filter((i) => i.state === S.tab);
   return list.sort((a, b) => (S.tab === 'waiting' ? b.ageH - a.ageH : a.ageH - b.ageH));
@@ -245,12 +270,14 @@ export function list(S) {
   const items = visibleItems(S);
   let html = items.map((i) => card(i, S)).join('');
   if (S.tab === 'todo') {
-    const snoozed = inbox.items.filter((i) => i.state === 'todo' && i.snoozedUntil);
-    const drafts = inbox.items.filter((i) => i.state === 'draft');
+    const snoozed = inbox.items.filter((i) => i.state === 'todo' && i.snoozedUntil && matches(i, S.filter));
+    const drafts = inbox.items.filter((i) => i.state === 'draft' && matches(i, S.filter));
     if (snoozed.length) html += `<details class="group"><summary>${icon('snooze')}Snoozed <span>${snoozed.length}</span></summary>${snoozed.map((i) => card(i, S)).join('')}</details>`;
     if (drafts.length) html += `<details class="group"><summary>${icon('pr')}Drafts <span>${drafts.length}</span></summary>${drafts.map((i) => card(i, S)).join('')}</details>`;
   }
-  if (!items.length) {
+  if (!items.length && S.filter) {
+    html = `<div class="empty-state">${mascot()}<h3>No matches</h3><p>Nothing here matches “${esc(S.filter)}”.</p></div>${html}`;
+  } else if (!items.length) {
     const empty = {
       todo: ['Inbox zero', 'Go grab a coffee, you earned it.'],
       waiting: ['No one to wait for', 'PRs where you asked for changes show up here.'],
@@ -288,6 +315,7 @@ export function signin(S) {
       ${a.error ? `<p class="error">${esc(a.error)}</p>` : ''}
       ${S.signinError ? `<p class="error">${esc(S.signinError)}</p>` : ''}
       <p class="hint">${a.checking && !S.signingIn ? '<span class="spinner"></span>Looking for an Azure CLI login…' : `${icon('shield')}${S.native ? 'Opens your browser to sign in. No PAT needed.' : 'No PAT. Your work account, stays on this PC.'}`}</p>
+      ${!S.signingIn ? '<button class="link subtle" data-act="signin-personal">Personal Microsoft account?</button>' : ''}
       ${S.data.settings.useAzCli === false ? '<button class="link" data-act="use-azcli">Use Azure CLI login instead</button>' : ''}
     </div>
     <ul class="features">
@@ -328,7 +356,7 @@ export function drawer(S) {
   <aside class="drawer" role="dialog" aria-label="Settings">
     <header><h2>Settings</h2><button class="icon-btn" data-act="close-settings" title="Close (Esc)">${icon('x')}</button></header>
     <section class="account">
-      ${avatar(name, 'lg')}
+      ${avatar(name, 'lg', myImage(S))}
       <div class="grow"><b>${esc(name)}</b><small>${esc(email)}</small><span class="pill">${d.auth.method === 'azcli' ? 'Azure CLI' : d.app.demo ? 'Demo account' : 'Microsoft account'}</span></div>
       <button class="btn ghost sm" data-act="signout">${icon('logout')}Sign out</button>
     </section>
@@ -355,14 +383,17 @@ export function drawer(S) {
       <div class="row"><span class="grow">Desktop popups<small>${perm === 'denied' ? 'Blocked in browser settings' : perm === 'default' ? 'Needs your permission' : 'New PRs, updates, feedback'}</small></span>
         ${perm === 'default' ? `<button class="btn sm" data-act="notify-perm">Allow</button>` : ''}
         ${sw(st.desktopPopups, 'data-act="toggle" data-setting="desktopPopups" aria-label="Desktop popups"')}</div>
-      <div class="row"><span class="grow">Nudges<small>Reminder when PRs wait too long</small></span>${sw(st.nudges, 'data-act="toggle" data-setting="nudges" aria-label="Nudges"')}</div>
-      ${st.nudges ? `<div class="row sub"><span class="grow">Work hours</span>${hours(st.workStart, 'workStart')}<span class="muted">–</span>${hours(st.workEnd, 'workEnd')}</div>` : ''}
+      <div class="row"><span class="grow">Only during work hours<small>No popups in the evening or weekend</small></span>${sw(st.quietHours, 'data-act="toggle" data-setting="quietHours" aria-label="Only during work hours"')}</div>
+      <div class="row"><span class="grow">Nudges &amp; weekly recap<small>Reminder when PRs wait too long, Friday recap</small></span>${sw(st.nudges, 'data-act="toggle" data-setting="nudges" aria-label="Nudges"')}</div>
+      ${st.nudges || st.quietHours ? `<div class="row sub"><span class="grow">Work hours</span>${hours(st.workStart, 'workStart')}<span class="muted">–</span>${hours(st.workEnd, 'workEnd')}</div>` : ''}
       <div class="row"><span class="grow">Team reviews<small>PRs assigned to your teams</small></span>${sw(st.includeTeams, 'data-act="toggle" data-setting="includeTeams" aria-label="Team reviews"')}</div>
       <div class="row"><span class="grow">Check every</span><select data-change="pollMinutes" aria-label="Refresh interval">${[1, 2, 3, 5, 10, 15].map((m) => `<option value="${m}" ${st.pollMinutes === m ? 'selected' : ''}>${m} min</option>`).join('')}</select></div>
     </section>
 
     <section>
       <h3>App</h3>
+      ${d.app.hotkey ? `<div class="row"><span class="grow">Shortcut <kbd>${esc(d.app.hotkey.label)}</kbd><small>${d.app.hotkey.failed ? 'Taken by another app' : 'Show or hide Daddy Review from anywhere'}</small></span>${sw(st.hotkey, 'data-act="toggle" data-setting="hotkey" aria-label="Global shortcut"')}</div>` : ''}
+      ${updateRow(d.app)}
       ${S.autostart && !d.app.demo ? `<div class="row"><span class="grow">Start with ${d.app.platform === 'win32' ? 'Windows' : 'login'}<small>Runs quietly in the background</small></span>${sw(S.autostart.enabled, 'data-act="autostart" aria-label="Start at login"')}</div>` : ''}
       <div class="row"><span class="grow">Theme</span><div class="seg">${['auto', 'light', 'dark'].map((t) => `<button class="${S.theme === t ? 'on' : ''}" data-act="theme" data-theme="${t}" title="${t}">${icon(t === 'auto' ? 'monitor' : t === 'light' ? 'sun' : 'moon')}</button>`).join('')}</div></div>
     </section>
@@ -370,9 +401,28 @@ export function drawer(S) {
   </aside>`;
 }
 
+function updateRow(app) {
+  const u = app.update;
+  if (!u || !u.supported) return '';
+  const text = {
+    idle: `Version ${app.version}`,
+    checking: 'Checking for updates…',
+    none: `Version ${app.version} · up to date`,
+    available: `Version ${u.version} is available`,
+    downloading: `Downloading ${u.version}… ${u.progress || 0}%`,
+    ready: `Version ${u.version} is ready`,
+    error: 'Couldn\'t check for updates',
+  }[u.status] || `Version ${app.version}`;
+  const btn = u.status === 'ready' ? `<button class="btn sm primary" data-act="update-install">${icon('refresh')}Restart</button>`
+    : u.status === 'available' ? `<button class="btn sm" data-act="update-install">${icon('download')}Download</button>`
+      : ['checking', 'downloading'].includes(u.status) ? '<span class="spinner"></span>'
+        : `<button class="btn sm ghost" data-act="update-check">Check</button>`;
+  return `<div class="row"><span class="grow">Updates<small>${esc(text)}</small></span>${btn}</div>`;
+}
+
 export function shortcuts(S) {
   if (!S.shortcuts) return '';
-  const k = [['J / K', 'Move'], ['Enter', 'Details'], ['O', 'Open in Azure DevOps'], ['A', 'Approve'], ['W', 'Wait for author'], ['S', 'Snooze 1h'], ['N', 'Review next'], ['R', 'Refresh'], ['1–4', 'Tabs'], ['P', 'Mini window'], ['Esc', 'Close']];
+  const k = [['/', 'Search'], ['J / K', 'Move'], ['Enter', 'Details'], ['O', 'Open in Azure DevOps'], ['A', 'Approve'], ['W', 'Wait for author'], ['S', 'Snooze 1h'], ['N', 'Review next'], ['R', 'Refresh'], ['1–4', 'Tabs'], ['P', 'Mini window'], ['Esc', 'Close']];
   return `<div class="overlay" data-act="shortcuts"></div><div class="modal" role="dialog" aria-label="Keyboard shortcuts"><h2>${icon('keyboard')}Shortcuts</h2>
     <dl>${k.map(([a, b]) => `<dt><kbd>${a}</kbd></dt><dd>${b}</dd>`).join('')}</dl></div>`;
 }
@@ -418,7 +468,7 @@ export function assistant(S) {
   const peek = !S.assistantOpen && S.peek ? `<div class="peek ${S.anim === 'peek' ? 'pop' : ''}" role="status">
       <button class="peek-x" data-act="peek-close" title="Dismiss">${icon('x')}</button>
       <b>${esc(S.peek.title)}</b><p>${esc(S.peek.body || '')}</p>
-      ${S.peek.key && S.peek.type !== 'feedback' ? `<button class="btn primary sm" data-act="review" data-key="${esc(S.peek.key)}">Review ${icon('arrow')}</button>` : ''}
+      ${S.peek.key ? `<button class="btn primary sm" data-act="${['feedback', 'comment'].includes(S.peek.type) ? 'open' : 'review'}" data-key="${esc(S.peek.key)}">${['feedback', 'comment'].includes(S.peek.type) ? 'Open' : 'Review'} ${icon('arrow')}</button>` : ''}
     </div>` : '';
 
   return `${peek}

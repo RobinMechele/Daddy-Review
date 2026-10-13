@@ -16,6 +16,8 @@ const { readJson, writeJson } = require('./util');
  */
 
 const EXTRA_SCOPES = 'offline_access openid profile';
+// Personal Microsoft accounts all live in this tenant; they refresh via "consumers".
+const MSA_TENANT = '9188040d-6c67-4c5b-b112-36a304b66dad';
 const SAFE_TENANT = /^[\w.-]{1,100}$/;
 
 class AuthRequired extends Error {
@@ -139,7 +141,8 @@ class Auth {
   }
 
   async refresh(tenant) {
-    const authority = tenant || this.saved.homeTenant || this.authority;
+    const home = this.saved.homeTenant === MSA_TENANT ? 'consumers' : this.saved.homeTenant;
+    const authority = tenant || home || this.authority;
     const json = await this.tokenRequest(authority, {
       grant_type: 'refresh_token',
       refresh_token: this.saved.refreshToken,

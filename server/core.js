@@ -14,6 +14,9 @@ const { createLogger, HttpError } = require('./util');
  * `host` lets the shell plug in what only it can do:
  *   host.login()      start sign-in (desktop: system browser + loopback)
  *   host.autostart    { status(), set(enabled) } for "start with Windows"
+ *   host.update       { status(), check(), install() } automatic updates
+ *   host.hotkey       { status() } the global shortcut
+ *   host.onSettings   called after settings change
  */
 function createCore(overrides = {}) {
   const config = loadConfig(overrides);
@@ -30,7 +33,14 @@ function createCore(overrides = {}) {
     const a = auth.status();
     const user = inbox.profile || a.user;
     return {
-      app: { version: config.VERSION, demo: config.DEMO, platform: process.platform, desktop: !!host.desktop },
+      app: {
+        version: config.VERSION,
+        demo: config.DEMO,
+        platform: process.platform,
+        desktop: !!host.desktop,
+        update: host.update ? host.update.status() : null,
+        hotkey: host.hotkey ? host.hotkey.status() : null,
+      },
       auth: a,
       profile: user ? { name: user.name, email: user.email } : null,
       settings: { ...inbox.settings },
@@ -56,7 +66,11 @@ function createCore(overrides = {}) {
       await withTimeout(inbox.poll({ force: true }), 45000);
       return state();
     },
-    'POST /api/login': () => (host.login ? host.login() : { url: auth.beginLogin() }),
+    'POST /api/login': ({ body }) => {
+      // Personal Microsoft accounts sign in through the "common" endpoint (work accounts still work there too).
+      if (body.personal) inbox.updateSettings({ tenant: 'common' });
+      return host.login ? host.login() : { url: auth.beginLogin() };
+    },
     'POST /api/logout': () => {
       auth.logout();
       // Signing out means signed out: don't silently come back in through Azure CLI.
@@ -83,8 +97,19 @@ function createCore(overrides = {}) {
     },
     'POST /api/settings': async ({ body }) => {
       const { orgsChanged } = inbox.updateSettings(body || {});
+      if (host.onSettings) host.onSettings(inbox.settings);
       if (orgsChanged) await withTimeout(inbox.poll({ force: true }), 20000);
       return state();
+    },
+    'POST /api/update/check': () => {
+      if (!host.update) throw new HttpError(400, 'Updates are not available here');
+      host.update.check();
+      return state();
+    },
+    'POST /api/update/install': () => {
+      if (!host.update) throw new HttpError(400, 'Updates are not available here');
+      host.update.install();
+      return { ok: true };
     },
     'GET /api/pr': ({ query }) => inbox.details(String(query.key)),
     'GET /api/autostart': () => (host.autostart ? host.autostart.status() : { supported: false, enabled: false }),
@@ -117,6 +142,27 @@ function createCore(overrides = {}) {
     }
   }
 
+  // Profile pictures: fetched with your token, kept in memory for a while.
+  const images = new Map();
+  async function image(url) {
+    const hit = images.get(url);
+    if (hit && hit.pending) return hit.pending;
+    if (hit && Date.now() - hit.at < (hit.img ? 12 * 36e5 : 30 * 60e3)) {
+      if (hit.img) return hit.img;
+      throw new HttpError(404, 'No image');
+    }
+    const pending = ado.image(url).then(
+      (img) => { images.set(url, { img, at: Date.now() }); return img; },
+      (e) => {
+        images.set(url, { img: null, at: Date.now() });
+        throw e.code === 'AUTH_REQUIRED' ? e : new HttpError(404, 'No image');
+      },
+    );
+    images.set(url, { pending, at: Date.now() });
+    if (images.size > 600) images.delete(images.keys().next().value);
+    return pending;
+  }
+
   return {
     config,
     log,
@@ -125,6 +171,7 @@ function createCore(overrides = {}) {
     inbox,
     state,
     call,
+    image,
     async start() {
       await auth.probe();
       inbox.start();

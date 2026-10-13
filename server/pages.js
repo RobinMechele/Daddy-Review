@@ -38,4 +38,7 @@ ${ok && closePopup ? `<script nonce="${nonce}">try{window.opener&&window.opener.
   };
 }
 
-module.exports = { resultPage, cleanSignInError, esc };
+/** 1×1 transparent PNG: what a missing profile picture becomes (the initials show through). */
+const BLANK_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+
+module.exports = { resultPage, cleanSignInError, esc, BLANK_PNG };
