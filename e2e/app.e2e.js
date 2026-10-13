@@ -209,8 +209,34 @@ async function firstStart() {
   }
 }
 
-main()
-  .then(() => (EXE ? firstStart() : null))
+/** The installed app checking the real GitHub Releases feed (no test feed). */
+async function githubUpdateCheck() {
+  delete process.env.DADDY_UPDATE_URL;
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'daddy-gh-'));
+  const app = await launch([], userData);
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('.signin-card');
+    await win.evaluate(() => window.daddyNative.api('POST', '/api/update/check'));
+    let st = null;
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      st = (await win.evaluate(() => window.daddyNative.api('GET', '/api/state'))).data.app.update;
+      if (st && !['idle', 'checking'].includes(st.status)) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    console.log(`  GitHub says: ${st.status}${st.version ? ` (${st.version})` : ''} for installed ${st.current}`);
+    assert.notEqual(st.status, 'error', `update check failed: ${st.error}`);
+    assert.ok(['none', 'available', 'downloading', 'ready'].includes(st.status));
+    console.log('  ✓ checks GitHub Releases for updates');
+  } finally {
+    await app.close();
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+}
+
+const only = process.env.DADDY_E2E_ONLY;
+(only === 'github-update' ? githubUpdateCheck() : main().then(() => (EXE ? firstStart() : null)))
   .then(() => console.log('\nDesktop app: all checks passed.')).catch((e) => {
   console.error(e);
   process.exit(1);
