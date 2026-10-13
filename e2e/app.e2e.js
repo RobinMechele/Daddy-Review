@@ -114,7 +114,9 @@ async function firstStart() {
   try {
     const win = await app.firstWindow();
     await win.waitForSelector('.signin-card');
+    // Usable right away, even while it looks for an Azure CLI login.
     assert.match(await win.textContent('[data-act="signin"]'), /Sign in with Microsoft/);
+    assert.equal(await win.isEnabled('[data-act="signin"]'), true);
     const info = await app.evaluate(({ app: a, Notification }) => ({
       packaged: a.isPackaged,
       autostart: a.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin,

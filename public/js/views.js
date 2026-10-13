@@ -274,19 +274,20 @@ export function nextItem(S) {
 
 export function signin(S) {
   const a = S.data.auth;
-  const busy = S.signingIn || a.checking;
+  // Never block the button on the (slow on Windows) Azure CLI check; it runs alongside.
+  const busy = S.signingIn;
   return `<div class="center-screen">
     <div class="signin-card">
       ${mascot('xl')}
       <h1>Daddy Review</h1>
       <p class="tagline">Your pull request sidekick for Azure DevOps</p>
       <button class="btn ms" data-act="signin" ${busy ? 'disabled' : ''}>
-        ${busy ? '<span class="spinner"></span>' : icon('ms', 'ms-logo')}${a.checking ? 'Checking Azure CLI…' : S.signingIn ? (S.native ? 'Finish in your browser…' : 'Finish signing in…') : 'Sign in with Microsoft'}
+        ${busy ? '<span class="spinner"></span>' : icon('ms', 'ms-logo')}${S.signingIn ? (S.native ? 'Finish in your browser…' : 'Finish signing in…') : 'Sign in with Microsoft'}
       </button>
       ${S.signingIn ? `<button class="link" data-act="signin-cancel">Cancel</button>${S.native ? '<button class="link" data-act="signin">Open the browser again</button>' : ''}` : ''}
       ${a.error ? `<p class="error">${esc(a.error)}</p>` : ''}
       ${S.signinError ? `<p class="error">${esc(S.signinError)}</p>` : ''}
-      <p class="hint">${icon('shield')}${S.native ? 'Opens your browser to sign in. No PAT needed.' : 'No PAT. Your work account, stays on this PC.'}</p>
+      <p class="hint">${a.checking && !S.signingIn ? '<span class="spinner"></span>Looking for an Azure CLI login…' : `${icon('shield')}${S.native ? 'Opens your browser to sign in. No PAT needed.' : 'No PAT. Your work account, stays on this PC.'}`}</p>
       ${S.data.settings.useAzCli === false ? '<button class="link" data-act="use-azcli">Use Azure CLI login instead</button>' : ''}
     </div>
     <ul class="features">
