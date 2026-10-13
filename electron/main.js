@@ -45,6 +45,7 @@ let miniWin = null;
 let tray = null;
 let fake = null;
 let quitting = false;
+let booted = false;
 const ui = { count: 0, bg: '#0a0e19', fg: '#e8ebf4' };
 const liveNotifications = new Set(); // keep references so click handlers survive GC
 
@@ -53,7 +54,8 @@ const liveNotifications = new Set(); // keep references so click handlers surviv
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => showMain());
+  // Opening the app again (Start menu, shortcut) just brings the running one forward.
+  app.on('second-instance', () => booted && showMain());
   app.whenReady().then(boot).catch((e) => {
     dialog.showErrorBox('Daddy Review could not start', String((e && e.stack) || e));
     app.exit(1);
@@ -100,6 +102,7 @@ async function boot() {
   createTray();
   createMain();
   firstRun();
+  booted = true;
   core.start();
 }
 
@@ -429,4 +432,4 @@ app.on('before-quit', () => {
 
 // Keep running in the tray when all windows are closed.
 app.on('window-all-closed', () => {});
-app.on('activate', () => showMain());
+app.on('activate', () => booted && showMain());
