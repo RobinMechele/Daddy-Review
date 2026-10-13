@@ -1,7 +1,7 @@
 'use strict';
 /**
- * End-to-end: the real server talking to the fake Azure DevOps + fake Microsoft
- * sign-in. Covers sign-in (PKCE), org discovery, the queue, votes, events,
+ * End-to-end through the browser-mode HTTP wrapper: the real engine talking to
+ * the fake Azure DevOps + fake Microsoft sign-in. Covers sign-in (PKCE), org discovery, the queue, votes, events,
  * desktop popups, persistence, token refresh and Azure CLI sign-in.
  */
 const test = require('node:test');
@@ -93,8 +93,8 @@ test('serves the app shell with a strict CSP', async () => {
   assert.equal(r.status, 200);
   assert.match(r.headers.get('content-security-policy'), /script-src 'self'/);
   assert.match(await r.text(), /Daddy Review/);
-  const m = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`);
-  assert.equal(m.headers.get('content-type'), 'application/manifest+json; charset=utf-8');
+  const js = await fetch(`http://127.0.0.1:${port}/js/app.js`);
+  assert.equal(js.headers.get('content-type'), 'text/javascript; charset=utf-8');
   const trav = await fetch(`http://127.0.0.1:${port}/..%2fpackage.json`);
   assert.notEqual(trav.status, 200);
 });

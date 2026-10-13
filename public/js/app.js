@@ -5,6 +5,8 @@ import { toast, confetti, notifyEvent, setBadge, canNotify } from './effects.js'
 import { createPip } from './pip.js';
 
 const params = new URLSearchParams(location.search);
+// Set by electron/preload.js in the desktop app; absent in the browser dev mode.
+const NATIVE = window.daddyNative || null;
 
 const S = {
   data: null,
@@ -24,16 +26,25 @@ const S = {
   session: store.get('session'),
   signingIn: false,
   signinError: null,
-  installEvt: null,
+  native: !!NATIVE,
   autostart: null,
   theme: store.get('theme', 'auto'),
   setupDismissed: store.get('setupDismissed', false),
   mini: params.get('mini') === '1',
 };
 if (S.session && Date.now() - S.session.at > 3 * 36e5) S.session = null;
-if (params.toString()) history.replaceState(null, '', '/');
+// Tidy the address, but the mini window must keep ?mini=1 to survive a reload.
+if (params.toString() && !S.mini) history.replaceState(null, '', '/');
 
 const pip = createPip({ html: () => V.mini(S), bind: (doc, win) => bindEvents(doc, win), onClose: () => {} });
+
+function startSession(key) {
+  const it = findItem(key);
+  if (it && it.state === 'todo') {
+    S.session = { key: it.key, title: it.title, at: Date.now() };
+    store.set('session', S.session);
+  }
+}
 
 // ---- data loading ------------------------------------------------------------------
 
@@ -98,9 +109,10 @@ function handleEvents(events) {
   for (const e of fresh.slice(-3)) {
     if (e.type === 'goal') confetti(pip.window && pip.window.document.hasFocus() ? pip.window.document : document);
     if (watching) showPeek(e);
-    else if (S.data.settings.desktopPopups) notifyEvent(e);
+    // The desktop app shows native notifications from the main process itself.
+    else if (!NATIVE && S.data.settings.desktopPopups) notifyEvent(e);
   }
-  if (fresh.length > 3 && !watching && S.data.settings.desktopPopups) {
+  if (!NATIVE && fresh.length > 3 && !watching && S.data.settings.desktopPopups) {
     notifyEvent({ id: maxId + 0.5, title: `${fresh.length - 3} more updates`, body: 'Open Daddy Review', url: '/' });
   }
 }
@@ -127,6 +139,11 @@ async function loadAutostart() {
 
 function applyTheme() {
   document.documentElement.dataset.theme = S.theme;
+  if (NATIVE) {
+    // Match the native window buttons (minimize/close) to the theme.
+    const css = getComputedStyle(document.documentElement);
+    NATIVE.setTitleBar({ bg: css.getPropertyValue('--bg').trim(), fg: css.getPropertyValue('--text').trim() });
+  }
 }
 
 function render() {
@@ -181,10 +198,7 @@ function openPr(key, win = window) {
   const it = findItem(key);
   if (!it) return;
   win.open(it.url, '_blank', 'noopener');
-  if (it.state === 'todo') {
-    S.session = { key, title: it.title, at: Date.now() };
-    store.set('session', S.session);
-  }
+  startSession(key);
   S.assistantOpen = false;
   S.peek = null;
   S.selectedKey = key;
@@ -282,6 +296,13 @@ async function signin() {
   S.signinError = null;
   try {
     const { url } = await api('POST', '/api/login');
+    if (!url) {
+      // Desktop app: your browser opened at Microsoft; we pick it up when you're back.
+      S.signingIn = true;
+      render();
+      load();
+      return;
+    }
     const w = 520;
     const h = 680;
     const popup = window.open(url, 'daddy-signin', `popup,width=${w},height=${h},left=${Math.max(0, (screen.width - w) / 2)},top=${Math.max(0, (screen.height - h) / 2)}`);
@@ -359,13 +380,6 @@ const actions = {
     }
     render();
   },
-  async install() {
-    if (!S.installEvt) return;
-    S.installEvt.prompt();
-    const { outcome } = await S.installEvt.userChoice;
-    if (outcome === 'accepted') S.installEvt = null;
-    render();
-  },
   async autostart() {
     try {
       S.autostart = await api('POST', '/api/autostart', { enabled: !(S.autostart && S.autostart.enabled) });
@@ -381,6 +395,7 @@ const actions = {
     applyTheme();
     render();
   },
+  'show-main': () => NATIVE && NATIVE.showMain(),
   assistant: () => {
     S.assistantOpen = !S.assistantOpen;
     S.anim = 'bubble';
@@ -397,7 +412,8 @@ const actions = {
   },
   async pip() {
     try {
-      await pip.open();
+      if (NATIVE) await NATIVE.openMini();
+      else await pip.open();
     } catch (e) {
       toast('Mini window is not available here', { kind: 'bad' });
     }
@@ -538,31 +554,16 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('message', (e) => {
   if (e.origin === location.origin && e.data && e.data.type === 'daddy-signed-in') load();
 });
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  S.installEvt = e;
-  render();
-});
-window.addEventListener('appinstalled', () => {
-  S.installEvt = null;
-  toast('Installed. Find Daddy Review in your Start menu.', { kind: 'ok' });
-  render();
-});
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
-  navigator.serviceWorker.addEventListener('message', (e) => {
-    const m = e.data || {};
-    if (m.type === 'opened' && m.key) {
-      const it = findItem(m.key);
-      if (it && it.state === 'todo') {
-        S.session = { key: it.key, title: it.title, at: Date.now() };
-        store.set('session', S.session);
-      }
-    }
-    if (m.type === 'refresh') load();
-  });
+if (NATIVE) {
+  document.documentElement.classList.add('native', `os-${NATIVE.platform}`);
+  NATIVE.on('daddy:refresh', () => load());
+  // A desktop notification was clicked and the PR opened in your browser.
+  NATIVE.on('daddy:opened', ({ key } = {}) => key && startSession(key));
 }
-matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', render);
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+  applyTheme();
+  render();
+});
 setInterval(() => {
   // keep relative times and the PiP window fresh
   if (S.data && S.data.auth.signedIn) render();

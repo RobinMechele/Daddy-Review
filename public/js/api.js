@@ -1,5 +1,16 @@
-/** Calls the local Daddy Review server. The custom header is what lets the server trust us. */
+/** Calls the Daddy Review engine: over IPC in the desktop app, over HTTP in the browser dev mode. */
 export async function api(method, path, body) {
+  if (window.daddyNative) {
+    // Desktop app: straight to the engine over IPC, no network involved.
+    const { status, data } = await window.daddyNative.api(method, path, body);
+    if (status >= 400) {
+      const e = new Error((data && data.error) || `Request failed (${status})`);
+      e.status = status;
+      e.code = data && data.code;
+      throw e;
+    }
+    return data;
+  }
   const headers = { 'X-Daddy-Review': '1' };
   if ('Notification' in window) headers['X-Daddy-Notify'] = Notification.permission;
   if (body !== undefined) headers['Content-Type'] = 'application/json';

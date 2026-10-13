@@ -161,7 +161,6 @@ export function topbar(S) {
     <div class="top-actions">
       <button class="icon-btn ${d.inbox.polling || S.refreshing ? 'spin' : ''}" data-act="refresh" title="Refresh (R)">${icon('refresh')}</button>
       <button class="icon-btn" data-act="pip" title="Mini window, always on top">${icon('pip')}</button>
-      ${S.installEvt ? `<button class="icon-btn accent" data-act="install" title="Install app">${icon('download')}</button>` : ''}
       <button class="icon-btn" data-act="settings" title="Settings">${icon('sliders')}</button>
       ${name ? `<button class="avatar-btn" data-act="settings" title="${esc(name)}">${avatar(name, 'sm')}</button>` : ''}
     </div>
@@ -212,8 +211,7 @@ export function hero(S) {
 export function setupStrip(S) {
   if (S.setupDismissed) return '';
   const items = [];
-  if ('Notification' in window && Notification.permission === 'default') items.push(`<button class="setup-item" data-act="notify-perm">${icon('bell')}Turn on popups</button>`);
-  if (S.installEvt) items.push(`<button class="setup-item" data-act="install">${icon('download')}Install app</button>`);
+  if (!S.native && 'Notification' in window && Notification.permission === 'default') items.push(`<button class="setup-item" data-act="notify-perm">${icon('bell')}Turn on popups</button>`);
   if (S.autostart && !S.autostart.enabled && !S.data.app.demo) items.push(`<button class="setup-item" data-act="autostart">${icon('power')}Start with ${S.data.app.platform === 'win32' ? 'Windows' : 'login'}</button>`);
   if (!items.length) return '';
   return `<div class="setup">${items.join('')}<button class="icon-btn sm" data-act="setup-dismiss" title="Hide">${icon('x')}</button></div>`;
@@ -283,12 +281,12 @@ export function signin(S) {
       <h1>Daddy Review</h1>
       <p class="tagline">Your pull request sidekick for Azure DevOps</p>
       <button class="btn ms" data-act="signin" ${busy ? 'disabled' : ''}>
-        ${busy ? '<span class="spinner"></span>' : icon('ms', 'ms-logo')}${a.checking ? 'Checking Azure CLI…' : S.signingIn ? 'Finish signing in…' : 'Sign in with Microsoft'}
+        ${busy ? '<span class="spinner"></span>' : icon('ms', 'ms-logo')}${a.checking ? 'Checking Azure CLI…' : S.signingIn ? (S.native ? 'Finish in your browser…' : 'Finish signing in…') : 'Sign in with Microsoft'}
       </button>
-      ${S.signingIn ? '<button class="link" data-act="signin-cancel">Cancel</button>' : ''}
+      ${S.signingIn ? `<button class="link" data-act="signin-cancel">Cancel</button>${S.native ? '<button class="link" data-act="signin">Open the browser again</button>' : ''}` : ''}
       ${a.error ? `<p class="error">${esc(a.error)}</p>` : ''}
       ${S.signinError ? `<p class="error">${esc(S.signinError)}</p>` : ''}
-      <p class="hint">${icon('shield')}No PAT. Your work account, stays on this PC.</p>
+      <p class="hint">${icon('shield')}${S.native ? 'Opens your browser to sign in. No PAT needed.' : 'No PAT. Your work account, stays on this PC.'}</p>
       ${S.data.settings.useAzCli === false ? '<button class="link" data-act="use-azcli">Use Azure CLI login instead</button>' : ''}
     </div>
     <ul class="features">
@@ -305,7 +303,7 @@ export function offline() {
       ${mascot('xl sleepy')}
       <h1>Daddy is napping</h1>
       <p class="tagline">The Daddy Review service isn't running on this PC.</p>
-      <div class="howto"><span>Start it with</span><code>Start Daddy Review</code><span>or</span><code>npm start</code></div>
+      <div class="howto"><span>Start it with</span><code>npm run web</code></div>
       <p class="hint"><span class="spinner"></span>Reconnecting…</p>
     </div>
   </div>`;
@@ -325,7 +323,6 @@ export function drawer(S) {
   const hours = (sel, key) => `<select data-change="${key}" aria-label="${key}">${Array.from({ length: 25 }, (_, h) => h)
     .filter((h) => (key === 'workStart' ? h < 24 : h > 0))
     .map((h) => `<option value="${h}" ${sel === h ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select>`;
-  const standalone = matchMedia('(display-mode: standalone)').matches;
   return `<div class="overlay" data-act="close-settings"></div>
   <aside class="drawer" role="dialog" aria-label="Settings">
     <header><h2>Settings</h2><button class="icon-btn" data-act="close-settings" title="Close (Esc)">${icon('x')}</button></header>
@@ -366,8 +363,6 @@ export function drawer(S) {
     <section>
       <h3>App</h3>
       ${S.autostart && !d.app.demo ? `<div class="row"><span class="grow">Start with ${d.app.platform === 'win32' ? 'Windows' : 'login'}<small>Runs quietly in the background</small></span>${sw(S.autostart.enabled, 'data-act="autostart" aria-label="Start at login"')}</div>` : ''}
-      <div class="row"><span class="grow">Install as app<small>${standalone ? 'Installed' : S.installEvt ? 'Own window, taskbar badge' : 'Use your browser menu → Install'}</small></span>
-        ${S.installEvt ? `<button class="btn sm" data-act="install">${icon('download')}Install</button>` : standalone ? icon('check', 'ok-ic') : ''}</div>
       <div class="row"><span class="grow">Theme</span><div class="seg">${['auto', 'light', 'dark'].map((t) => `<button class="${S.theme === t ? 'on' : ''}" data-act="theme" data-theme="${t}" title="${t}">${icon(t === 'auto' ? 'monitor' : t === 'light' ? 'sun' : 'moon')}</button>`).join('')}</div></div>
     </section>
     <footer><span>v${esc(d.app.version)}</span><button class="link" data-act="shortcuts">${icon('keyboard')}Shortcuts</button></footer>

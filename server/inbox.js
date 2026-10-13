@@ -34,12 +34,15 @@ const friendly = (e) => (e && e.message ? String(e.message).slice(0, 200) : 'Som
 
 /** Polls Azure DevOps, keeps the review queue, events and stats. */
 class Inbox {
-  constructor({ config, ado, auth, log, notify = () => {} }) {
+  constructor({ config, ado, auth, log, notify = () => {}, suppressToast = null }) {
     this.config = config;
     this.ado = ado;
     this.auth = auth;
     this.log = log;
     this.notify = notify;
+    // Desktop app: "is the window focused?" (it shows the news itself then).
+    // Browser mode: a tab that can show notifications polled recently.
+    this.suppressToast = suppressToast || (() => Date.now() - this.notifyClientAt < 150000);
     this.file = path.join(config.DATA_DIR, 'state.json');
     const saved = readJson(this.file, {}) || {};
     this.state = {
@@ -276,8 +279,7 @@ class Inbox {
     this.state.events.push(evt);
     if (this.state.events.length > 60) this.state.events.splice(0, this.state.events.length - 60);
     this.save();
-    const appIsWatching = Date.now() - this.notifyClientAt < 150000;
-    if (this.settings.desktopPopups && !appIsWatching && evt.title) this.queueToast(evt);
+    if (this.settings.desktopPopups && evt.title && !this.suppressToast()) this.queueToast(evt);
     return evt;
   }
 
@@ -287,8 +289,8 @@ class Inbox {
     this.toastTimer = setTimeout(() => {
       const q = this.toastQueue.splice(0);
       const shown = q.length > 3 ? q.slice(0, 2) : q;
-      for (const e of shown) this.notify({ title: e.title, body: e.body || '', url: e.url || this.config.APP_URL });
-      if (q.length > 3) this.notify({ title: `${q.length - 2} more updates`, body: 'Open Daddy Review to see them', url: this.config.APP_URL });
+      for (const e of shown) this.notify({ title: e.title, body: e.body || '', url: e.url || null, key: e.key || null, type: e.type });
+      if (q.length > 3) this.notify({ title: `${q.length - 2} more updates`, body: 'Open Daddy Review to see them', url: null, key: null, type: 'more' });
     }, 400);
   }
 
@@ -299,7 +301,7 @@ class Inbox {
     if (this.state.reviews.length > 3000) this.state.reviews.splice(0, this.state.reviews.length - 3000);
     const after = logic.stats(this.state.reviews, r.at, goal).today;
     if (before < goal && after >= goal) {
-      this.emit({ type: 'goal', title: 'Daily goal reached 🎉', body: `${after} reviews today. Legend.`, url: this.config.APP_URL });
+      this.emit({ type: 'goal', title: 'Daily goal reached 🎉', body: `${after} reviews today. Legend.` });
     }
   }
 

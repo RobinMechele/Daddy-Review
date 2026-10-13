@@ -1,22 +1,82 @@
 {
   "name": "daddy-review",
   "version": "1.0.0",
-  "description": "Your Azure DevOps pull request review sidekick. Installable app, popups, no PAT needed.",
+  "description": "Your Azure DevOps pull request review sidekick. A desktop app with popups, no PAT needed.",
   "private": true,
   "license": "MIT",
-  "main": "server/index.js",
-  "bin": {
-    "daddy-review": "server/index.js"
-  },
+  "main": "electron/main.js",
   "scripts": {
-    "start": "node server/index.js",
-    "demo": "node demo/run-demo.js",
-    "install-app": "node server/index.js --install",
-    "uninstall-app": "node server/index.js --uninstall",
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "web": "node server/index.js",
+    "web:demo": "node demo/run-demo.js",
     "icons": "node scripts/make-icons.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:app": "node e2e/app.e2e.js"
   },
   "engines": {
     "node": ">=18.17"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.16.1",
+    "playwright-core": "1.56.1"
+  },
+  "author": {
+    "name": "Robin Mechele"
+  },
+  "build": {
+    "appId": "app.daddyreview",
+    "productName": "Daddy Review",
+    "copyright": "Copyright © 2026 Robin Mechele",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "public/**",
+      "demo/fake-ado.js",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Daddy Review",
+      "artifactName": "Daddy-Review-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "artifactName": "Daddy-Review-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "artifactName": "Daddy-Review-${version}.${ext}"
+    },
+    "publish": null
   }
 }

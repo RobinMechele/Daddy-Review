@@ -75,33 +75,49 @@ export function confetti(doc = document) {
 
 export const canNotify = () => 'Notification' in window && Notification.permission === 'granted';
 
-export async function notifyEvent(evt) {
+/** Browser dev mode only; the desktop app shows notifications from its main process. */
+export function notifyEvent(evt) {
   if (!canNotify()) return false;
-  const opts = {
-    body: evt.body || '',
-    icon: '/icons/icon-192.png',
-    badge: '/icons/badge-72.png',
-    tag: `daddy-${evt.id}`,
-    data: { url: evt.url || '/', key: evt.key || null, type: evt.type },
-    requireInteraction: evt.type === 'new',
-  };
-  if (evt.key) opts.actions = [{ action: 'open', title: 'Review' }, { action: 'snooze', title: 'Snooze 1h' }];
   try {
-    const reg = await navigator.serviceWorker?.getRegistration();
-    if (reg) await reg.showNotification(evt.title, opts);
-    else new Notification(evt.title, opts);
+    const n = new Notification(evt.title, { body: evt.body || '', icon: '/icons/icon-192.png', tag: `daddy-${evt.id}` });
+    n.onclick = () => {
+      window.focus();
+      if (evt.url && /^https?:/i.test(evt.url)) window.open(evt.url, '_blank', 'noopener');
+      n.close();
+    };
     return true;
   } catch {
-    try {
-      new Notification(evt.title, { body: opts.body, icon: opts.icon, tag: opts.tag });
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
+/** Red count badge for the Windows taskbar button (overlay icon). */
+function badgePng(n) {
+  const c = document.createElement('canvas');
+  c.width = 32;
+  c.height = 32;
+  const g = c.getContext('2d');
+  g.fillStyle = '#f43f5e';
+  g.beginPath();
+  g.arc(16, 16, 16, 0, Math.PI * 2);
+  g.fill();
+  const text = n > 99 ? '99+' : String(n);
+  g.fillStyle = '#fff';
+  g.font = `700 ${text.length > 2 ? 13 : text.length > 1 ? 17 : 21}px "Segoe UI", system-ui, sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, 16, 17);
+  return c.toDataURL('image/png');
+}
+
+let lastBadge = null;
 export function setBadge(n) {
+  if (window.daddyNative) {
+    if (n === lastBadge) return;
+    lastBadge = n;
+    window.daddyNative.setBadge(n, n > 0 ? badgePng(n) : null);
+    return;
+  }
   try {
     if (!('setAppBadge' in navigator)) return;
     if (n > 0) navigator.setAppBadge(n);

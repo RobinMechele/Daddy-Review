@@ -217,19 +217,22 @@ class Auth {
     }
   }
 
-  /** Returns the Microsoft sign-in URL for the browser (auth code + PKCE). */
-  beginLogin() {
+  /**
+   * Returns the Microsoft sign-in URL (auth code + PKCE). `redirectUri` is the
+   * localhost address that receives the answer (any port is allowed for loopback).
+   */
+  beginLogin({ redirectUri = this.redirectUri } = {}) {
     const now = Date.now();
     for (const [k, v] of this.pending) if (now - v.at > 15 * 60000) this.pending.delete(k);
     const verifier = b64url(crypto.randomBytes(32));
     const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
     const state = b64url(crypto.randomBytes(16));
     const authority = this.authority;
-    this.pending.set(state, { verifier, authority, at: now });
+    this.pending.set(state, { verifier, authority, redirectUri, at: now });
     const q = new URLSearchParams({
       client_id: this.config.CLIENT_ID,
       response_type: 'code',
-      redirect_uri: this.redirectUri,
+      redirect_uri: redirectUri,
       response_mode: 'query',
       scope: `${this.config.ADO_RESOURCE}/.default ${EXTRA_SCOPES}`,
       state,
@@ -247,7 +250,7 @@ class Auth {
     const json = await this.tokenRequest(p.authority, {
       grant_type: 'authorization_code',
       code,
-      redirect_uri: this.redirectUri,
+      redirect_uri: p.redirectUri,
       code_verifier: p.verifier,
     });
     if (json.error || !json.access_token) {
