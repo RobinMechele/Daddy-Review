@@ -4,6 +4,9 @@
  * Drives the real desktop app (Electron) in demo mode: sign in, see the queue,
  * vote, open a PR, the mini window, closing to the tray.
  *   npm run test:app            (Linux CI: xvfb-run -a npm run test:app)
+ * Set DADDY_APP_EXE to an installed app (e.g. ...\Daddy Review.exe) to test the
+ * real installed build instead of the source; that also checks the non-demo
+ * first start (sign-in screen, "start with Windows" switched on).
  * Screenshots go to e2e/screenshots/.
  */
 const { _electron: electron } = require('playwright-core');
@@ -14,17 +17,25 @@ const fs = require('fs');
 
 const ROOT = path.join(__dirname, '..');
 const SHOTS = path.join(__dirname, 'screenshots');
+const EXE = process.env.DADDY_APP_EXE || null;
+// Containers (root) and Ubuntu CI runners can't use Chromium's sandbox; real installs do.
+const NO_SANDBOX = process.platform === 'linux' && ((process.getuid && process.getuid() === 0) || !!process.env.CI);
+
+function launch(extraArgs, userData) {
+  const args = [...(EXE ? [] : [ROOT]), ...extraArgs, ...(NO_SANDBOX ? ['--no-sandbox'] : [])];
+  return electron.launch({
+    ...(EXE ? { executablePath: EXE } : {}),
+    args,
+    env: { ...process.env, DADDY_USER_DATA: userData },
+    colorScheme: process.env.DADDY_SHOT_THEME || 'dark',
+  });
+}
 
 async function main() {
   fs.mkdirSync(SHOTS, { recursive: true });
+  console.log(EXE ? `Installed app: ${EXE}` : 'App from source');
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'daddy-app-'));
-  // Containers (root) and Ubuntu CI runners can't use Chromium's sandbox; real installs do.
-  const noSandbox = (process.getuid && process.getuid() === 0) || !!process.env.CI;
-  const app = await electron.launch({
-    args: [ROOT, '--demo', ...(noSandbox ? ['--no-sandbox'] : [])],
-    colorScheme: process.env.DADDY_SHOT_THEME || 'dark',
-    env: { ...process.env, DADDY_USER_DATA: userData },
-  });
+  const app = await launch(['--demo'], userData);
   const errors = [];
   const step = (name) => console.log(`  ✓ ${name}`);
   try {
@@ -96,7 +107,35 @@ async function main() {
   }
 }
 
-main().then(() => console.log('\nDesktop app: all checks passed.')).catch((e) => {
+/** The installed app without --demo: a first start, like after running the installer. */
+async function firstStart() {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'daddy-first-'));
+  const app = await launch([], userData);
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('.signin-card');
+    assert.match(await win.textContent('[data-act="signin"]'), /Sign in with Microsoft/);
+    const info = await app.evaluate(({ app: a, Notification }) => ({
+      packaged: a.isPackaged,
+      autostart: a.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin,
+      notifications: Notification.isSupported(),
+    }));
+    assert.equal(info.packaged, true);
+    console.log(`  ✓ first start shows sign-in (packaged, notifications supported: ${info.notifications})`);
+    if (process.platform !== 'linux') {
+      assert.equal(info.autostart, true, 'starts with Windows after the first run');
+      console.log('  ✓ "start with Windows" is on after the first run');
+      await app.evaluate(({ app: a }) => a.setLoginItemSettings({ openAtLogin: false, args: ['--hidden'] }));
+    }
+  } finally {
+    await app.close();
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+}
+
+main()
+  .then(() => (EXE ? firstStart() : null))
+  .then(() => console.log('\nDesktop app: all checks passed.')).catch((e) => {
   console.error(e);
   process.exit(1);
 });
