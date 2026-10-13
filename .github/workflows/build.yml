@@ -114,6 +114,7 @@ jobs:
     needs: [build, windows-install-test]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: Daddy-Review-*
@@ -121,5 +122,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          name: Daddy Review ${{ github.ref_name }}
+          body_path: .github/release-notes.md
           files: dist/*
           generate_release_notes: true

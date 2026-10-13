@@ -8,13 +8,11 @@ A desktop app that helps you do more pull request reviews on **Azure DevOps**. I
 
 ## Install
 
-Download the installer for your system from the latest build:
+**[⬇ Download the latest release](https://github.com/RobinMechele/Daddy-Review/releases/latest)**
 
 - **Windows:** `Daddy-Review-Setup-x.y.z.exe`. Run it; it installs for your user (no admin) and starts.
 - **macOS:** `Daddy-Review-x.y.z-arm64.dmg`
 - **Linux:** `Daddy-Review-x.y.z.AppImage`
-
-Where to download: the repository's **Releases** page, or **Actions → Build desktop app → latest run → Artifacts**.
 
 > The installer isn't code-signed yet. Windows may show *"Windows protected your PC"*: click **More info → Run anyway**. On macOS, right-click the app → **Open** the first time.
 
