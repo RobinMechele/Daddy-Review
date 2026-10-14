@@ -25,6 +25,9 @@ const TEAMS = {
   platform: { id: 'g-platform', displayName: '[Platform]\\Platform Team', descriptor: 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-platform' },
   payments: { id: 'g-payments', displayName: '[Payments]\\Payments Team', descriptor: 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-payments' },
 };
+// You're in the Payments team only through this Entra group (nested membership).
+const ENTRA_GROUP = { id: 'g-entra-devs', displayName: '[TEAM FOUNDATION]\\Contoso Developers', descriptor: 'Microsoft.TeamFoundation.Identity;S-1-9-1551374245-entra-devs' };
+const VALID_USERS = { id: 'g-valid', displayName: '[contoso]\\Project Collection Valid Users', descriptor: 'Microsoft.TeamFoundation.Identity;S-1-9-valid-users' };
 const REPOS = {
   'payments-api': { project: 'Payments', files: ['src/Payments.Api/Controllers/InvoiceController.cs', 'src/Payments.Domain/Invoice.cs', 'src/Payments.Domain/Money.cs', 'tests/Payments.Tests/InvoiceTests.cs', 'src/Payments.Api/Webhooks/WebhookHandler.cs', 'src/Payments.Infrastructure/RetryPolicy.cs', 'src/Payments.Api/appsettings.json'] },
   'checkout-web': { project: 'Payments', files: ['src/components/PayButton.tsx', 'src/components/Cart.tsx', 'src/flags.ts', 'src/styles/checkout.css', 'README.md', 'src/hooks/usePayment.ts'] },
@@ -89,6 +92,10 @@ function seed(now = Date.now()) {
   add('contoso', 1203, 'payments-api', P.jonas, 20, 9, 'WIP: new ledger schema', [R(P.me)], { draft: true });
   add('contoso', 1190, 'payments-api', P.priya, 48, 4, 'Cache exchange rates for 5 minutes', [R(P.me, 10)]);
   add('contoso', 1199, 'infra', P.lucas, 6, 9, 'Migrate CI to pipeline templates', [R(TEAMS.platform, 10, { team: true }), R(P.noah, 10, { votedFor: [{ id: TEAMS.platform.id }] })]);
+  // Asks for the Payments team (you're in it through an Entra group).
+  add('contoso', 1208, 'checkout-web', P.mia, 9, 3, 'Remember the last used payment method', [R(TEAMS.payments, 0, { team: true })]);
+  // Doesn't ask for you at all: only shows up when you watch the mobile-app repository.
+  add('contoso', 1209, 'mobile-app', P.lucas, 12, 5, 'Offline mode for order history', [R(P.mia)]);
   add('fabrikam-labs', 312, 'ml-pipeline', P.mia, 8, 6, 'Speed up feature extraction with Arrow', [R(P.me, 0, { isRequired: true })], { labels: ['perf'] });
   add('fabrikam-labs', 309, 'ml-pipeline', P.noah, 30, 2, 'Fix flaky test in tokenizer', [R(P.me)], { conflicts: true });
   // Created by me
@@ -193,12 +200,18 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
     complete(org, id) {
       findPr(org, id).status = 'completed';
     },
+    publish(org, id) {
+      const pr = findPr(org, id);
+      pr.isDraft = false;
+      return pr;
+    },
     pr: findPr,
     /** An access token as if it came from `az account get-access-token`. */
     issueToken() {
       return issue().access_token;
     },
     get log() { return log; },
+    listCalls: [],
     reset() { prs = seed(); },
   };
 
@@ -296,23 +309,48 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
 
     m = /^\/vssps\/([^/]+)\/_apis\/identities$/.exec(p);
     if (m) {
-      if (qp('identityIds') === ME.id && qp('queryMembership') === 'Direct') {
-        return send(res, 200, { count: 1, value: [{ id: ME.id, providerDisplayName: ME.name, memberOf: [TEAMS.platform.descriptor, TEAMS.payments.descriptor, 'Microsoft.TeamFoundation.Identity;S-1-9-valid-users'] }] });
+      if (qp('identityIds') === ME.id) {
+        // Direct: the Platform team and the Entra group. Expanded also has the Payments team the group is in.
+        const direct = [TEAMS.platform.descriptor, ENTRA_GROUP.descriptor, VALID_USERS.descriptor];
+        const memberOf = qp('queryMembership') === 'Expanded' ? [...direct, TEAMS.payments.descriptor] : direct;
+        return send(res, 200, { count: 1, value: [{ id: ME.id, providerDisplayName: ME.name, memberOf }] });
       }
       const wanted = (qp('descriptors') || '').split(',');
-      const all = [...Object.values(TEAMS), { id: 'g-valid', displayName: '[contoso]\\Project Collection Valid Users', descriptor: 'Microsoft.TeamFoundation.Identity;S-1-9-valid-users' }];
+      const all = [...Object.values(TEAMS), ENTRA_GROUP, VALID_USERS];
       return send(res, 200, { value: all.filter((t) => wanted.includes(t.descriptor)).map((t) => ({ id: t.id, providerDisplayName: t.displayName, isContainer: true })) });
     }
 
-    m = /^\/ado\/([^/]+)\/_apis\/git\/pullrequests$/.exec(p);
+    m = /^\/ado\/([^/]+)\/_apis\/teams$/.exec(p);
+    if (m) {
+      if (qp('$mine') !== 'true') return send(res, 200, { value: [] });
+      return send(res, 200, { value: [{ id: TEAMS.platform.id, name: 'Platform Team', projectName: 'Platform' }] });
+    }
+
+    m = /^\/ado\/([^/]+)\/_apis\/git\/repositories$/.exec(p);
     if (m) {
       const org = decodeURIComponent(m[1]);
+      const names = [...new Set(prs.filter((pr) => pr.org === org).map((pr) => pr.repo))];
+      return send(res, 200, { value: names.map((name) => ({ id: `repo-${name}`, name, project: { id: `proj-${REPOS[name].project}`, name: REPOS[name].project } })) });
+    }
+
+    // PR lists: the whole org, one project, or one repository. Paged with $top/$skip.
+    m = /^\/ado\/([^/]+)(?:\/([^/]+))?\/_apis\/git\/(?:repositories\/([^/]+)\/)?pullrequests$/i.exec(p);
+    if (m && !(m[3] && !m[2])) {
+      const org = decodeURIComponent(m[1]);
+      const project = m[2] ? decodeURIComponent(m[2]) : null;
+      const repo = m[3] ? decodeURIComponent(m[3]) : null;
       const reviewerId = qp('searchCriteria.reviewerId');
       const creatorId = qp('searchCriteria.creatorId');
+      control.listCalls.push(req.url);
       const list = prs.filter((pr) => pr.org === org && pr.status === (qp('searchCriteria.status') || 'active')
+        && (!project || `proj-${REPOS[pr.repo].project}` === project)
+        && (!repo || `repo-${pr.repo}` === repo)
         && (!reviewerId || pr.reviewers.some((r) => r.id === reviewerId))
         && (!creatorId || pr.author.id === creatorId));
-      return send(res, 200, { count: list.length, value: list.map(toApi) });
+      const skip = Number(qp('$skip')) || 0;
+      const top = Number(qp('$top')) || 101;
+      const page = list.slice(skip, skip + top);
+      return send(res, 200, { count: page.length, value: page.map(toApi) });
     }
 
     m = /^\/ado\/([^/]+)\/[^/]+\/_apis\/git\/repositories\/[^/]+\/pullRequests\/(\d+)(\/.*)?$/.exec(p);

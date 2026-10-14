@@ -65,7 +65,7 @@ test('desktop sign-in via system browser + loopback, then the queue loads over d
   r = await core.call('POST', '/api/refresh');
   assert.equal(r.data.auth.signedIn, true);
   assert.equal(r.data.profile.name, ME.name);
-  assert.equal(r.data.inbox.counts.todo, 7);
+  assert.equal(r.data.inbox.counts.todo, 9);
 
   // The loopback listener is gone once sign-in is done.
   await assert.rejects(fetch(redirect));

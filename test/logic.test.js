@@ -35,12 +35,15 @@ test('toItem normalises a PR and builds the web link', () => {
 
 test('classify: todo, waiting, done, mine, draft, team-covered', () => {
   const c = (over, snap) => logic.classify(logic.toItem(pr(over), ctx), snap).state;
+  const covered = (over) => logic.classify(logic.toItem(pr(over), ctx), {});
   assert.equal(c(), 'todo');
   assert.equal(c({ reviewers: [{ id: ME, vote: -5 }] }, { votedCommit: 'c1' }), 'waiting');
   assert.equal(c({ reviewers: [{ id: ME, vote: 10 }] }, { votedCommit: 'c1' }), 'done');
   assert.equal(c({ createdBy: { id: ME } }), 'mine');
   assert.equal(c({ isDraft: true }), 'draft');
-  assert.equal(c({ reviewers: [{ id: 'team-id', vote: 10, isContainer: true }] }), 'done');
+  // A teammate voting for your team doesn't make it done for you.
+  assert.deepEqual(covered({ reviewers: [{ id: 'team-id', vote: 10, isContainer: true }] }), { state: 'todo', updated: false, covered: true });
+  assert.deepEqual(covered({ reviewers: [{ id: 'team-id', vote: -5, isContainer: true }] }), { state: 'todo', updated: false, covered: true });
   assert.equal(c({ reviewers: [{ id: 'team-id', vote: 0, isContainer: true, isRequired: true }] }), 'todo');
   assert.equal(c({ reviewers: [{ id: ME, vote: 10, hasDeclined: true }] }), 'hidden');
 });

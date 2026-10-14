@@ -17,10 +17,19 @@ const DEFAULT_SETTINGS = {
   tenant: 'organizations',
   quietHours: false,
   hotkey: true,
+  // Per organization: repositories/projects to watch ({ pick: [...], only }).
+  repos: {},
 };
 const POLL_CHOICES = [1, 2, 3, 5, 10, 15];
 const NUDGE_EVERY = 2 * 36e5;
+// Organizations with more active PRs than this are looked through for your teams every 10 minutes.
+const SCAN_MAX = 1000;
+const SCAN_EVERY_BIG = 10 * 60e3;
+const ID = /^[\w.-]{1,100}$/;
 const ORG_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Bumped when the app starts finding more PRs (e.g. nested teams in 1.2): the extra
+// ones are taken in silently once instead of popping up as "new".
+const SCOPE_VERSION = 2;
 
 /** Accepts "contoso", "https://dev.azure.com/contoso/..." or "https://contoso.visualstudio.com". */
 function parseOrg(input) {
@@ -50,7 +59,8 @@ class Inbox {
     this.state = {
       settings: { ...DEFAULT_SETTINGS, ...(saved.settings || {}) },
       snapshot: saved.snapshot || {},
-      baselined: saved.baselined || {},
+      baselined: (saved.scopeVersion || 1) >= SCOPE_VERSION ? saved.baselined || {} : {},
+      scopeVersion: SCOPE_VERSION,
       reviews: Array.isArray(saved.reviews) ? saved.reviews : [],
       snoozed: saved.snoozed || {},
       events: Array.isArray(saved.events) ? saved.events : [],
@@ -58,6 +68,8 @@ class Inbox {
       lastNudgeAt: Number(saved.lastNudgeAt) || 0,
       lastRecap: saved.lastRecap || null,
     };
+    const st = this.state.settings;
+    if (!st.repos || typeof st.repos !== 'object' || Array.isArray(st.repos)) st.repos = {};
     this.items = new Map();
     this.orgItems = new Map();
     this.orgMeta = new Map();
@@ -215,19 +227,38 @@ class Inbox {
     const s = this.settings;
     const discovered = this.discovered || [];
     const names = [...new Set([...discovered, ...s.extraOrgs])].sort((a, b) => a.localeCompare(b));
-    return names.map((name) => ({
-      name,
-      enabled: !s.disabledOrgs.includes(name),
-      manual: !discovered.includes(name),
-      error: this.errors[name] || null,
-    }));
+    return names.map((name) => {
+      const meta = this.orgMeta.get(name);
+      const w = s.repos[name];
+      return {
+        name,
+        enabled: !s.disabledOrgs.includes(name),
+        manual: !discovered.includes(name),
+        error: this.errors[name] || null,
+        counts: (meta && meta.counts) || null,
+        watch: w && w.pick.length ? { count: w.pick.length, only: !!w.only, names: w.pick.slice(0, 3).map((p) => p.name) } : null,
+      };
+    });
+  }
+
+  /** The repositories/projects you watch in an organization, or null for "all". */
+  watchOf(org) {
+    const w = this.settings.repos && this.settings.repos[org];
+    if (!w || !Array.isArray(w.pick) || !w.pick.length) return null;
+    const projects = new Set(w.pick.filter((p) => p.kind === 'project').map((p) => p.id));
+    const repos = new Set(w.pick.filter((p) => p.kind === 'repo').map((p) => p.id));
+    const scopes = [
+      ...[...projects].map((projectId) => ({ projectId })),
+      ...w.pick.filter((p) => p.kind === 'repo' && !projects.has(p.projectId)).map((p) => ({ projectId: p.projectId, repoId: p.id, name: p.name })),
+    ];
+    return { only: !!w.only, scopes, has: (it) => projects.has(it.projectId) || repos.has(it.repoId) };
   }
 
   async fetchOrg(org) {
     let meta = this.orgMeta.get(org);
     if (!meta || Date.now() - meta.at > 6 * 36e5) {
       const conn = await this.ado.connection(org);
-      meta = { myId: conn.id, at: Date.now(), groups: meta ? meta.groups : [], groupsAt: meta ? meta.groupsAt : 0 };
+      meta = { ...(meta || {}), myId: conn.id, at: Date.now(), groups: meta ? meta.groups : [], groupsAt: meta ? meta.groupsAt : 0 };
       this.orgMeta.set(org, meta);
     }
     if (this.settings.includeTeams && Date.now() - meta.groupsAt > 36e5) {
@@ -240,20 +271,104 @@ class Inbox {
       meta.groupsAt = Date.now();
     }
     const groups = this.settings.includeTeams ? meta.groups || [] : [];
-    const queries = [
-      { 'searchCriteria.reviewerId': meta.myId },
-      { 'searchCriteria.creatorId': meta.myId },
-      ...groups.map((g) => ({ 'searchCriteria.reviewerId': g.id })),
-    ];
-    const lists = await mapLimit(queries, 4, (q, i) =>
-      this.ado.pullRequests(org, q).catch((e) => {
-        if (i < 2) throw e;
-        return [];
-      }));
+    const groupIds = new Set(groups.map((g) => g.id));
+    const watch = this.watchOf(org);
+    const forYou = (pr) => (pr.createdBy && pr.createdBy.id === meta.myId)
+      || (pr.reviewers || []).some((r) => r && (r.id === meta.myId || groupIds.has(r.id)));
+    const found = [];
+
+    // PRs for your teams: look through the active PRs and keep the ones that ask for a team you're in.
+    const scan = groupIds.size && !(watch && watch.only) ? await this.scanTeams(org, meta, groupIds) : null;
+    if (scan && scan.complete) {
+      found.push(...scan.list.filter(forYou));
+    } else {
+      // Asked for you or created by you, plus (big orgs) the teams seen on PRs.
+      const queries = [
+        { 'searchCriteria.reviewerId': meta.myId },
+        { 'searchCriteria.creatorId': meta.myId },
+        ...(groupIds.size ? meta.teamHits || [] : []).slice(0, 15).map((id) => ({ 'searchCriteria.reviewerId': id })),
+      ];
+      const lists = await mapLimit(queries, 4, (q, i) =>
+        this.ado.pullRequests(org, q).catch((e) => {
+          if (i < 2 || e.code === 'AUTH_REQUIRED') throw e;
+          return [];
+        }));
+      found.push(...lists.flat());
+      if (scan) found.push(...scan.list.filter(forYou));
+    }
+
+    // Repositories you watch: every active PR in them, for you or not.
+    if (watch) {
+      const lists = await mapLimit(watch.scopes, 4, (sc) =>
+        this.ado.scopePrs(org, sc).then((r) => r.list).catch((e) => {
+          if (e.code === 'AUTH_REQUIRED') throw e;
+          this.log.warn(`${org}: could not load ${sc.name || 'a watched project'} (${friendly(e)})`);
+          return [];
+        }));
+      found.push(...lists.flat());
+    }
+
     const byId = new Map();
-    for (const pr of lists.flat()) if (pr && pr.pullRequestId) byId.set(pr.pullRequestId, pr);
+    for (const pr of found) if (pr && pr.pullRequestId && pr.status !== 'completed' && pr.status !== 'abandoned') byId.set(pr.pullRequestId, pr);
     const ctx = { org, myId: meta.myId, groups: new Map(groups.map((g) => [g.id, g.name])), webBase: this.config.WEB_BASE };
-    return [...byId.values()].map((pr) => logic.toItem(pr, ctx));
+    let items = [...byId.values()].map((pr) => logic.toItem(pr, ctx));
+    if (watch) {
+      for (const it of items) it.watched = watch.has(it);
+      // "Only these repositories": your own PRs always stay.
+      if (watch.only) items = items.filter((it) => it.mine || it.watched);
+    }
+    meta.counts = {
+      prs: items.length,
+      forYou: items.filter((it) => it.direct || it.team).length,
+      viaTeams: items.filter((it) => it.team && !it.direct && !it.mine).length,
+      mine: items.filter((it) => it.mine).length,
+      teams: groups.length,
+    };
+    const summary = JSON.stringify(meta.counts);
+    if (summary !== meta.logged) {
+      meta.logged = summary;
+      this.log.info(`${org}: ${items.length} active PRs (for you ${meta.counts.forYou}, yours ${meta.counts.mine}, teams ${groups.length}${watch ? `, watching ${watch.scopes.length}` : ''})`);
+    }
+    return items;
+  }
+
+  /**
+   * Look through the organization's active PRs for ones that ask for your teams.
+   * Done every refresh, except in very big organizations (every 10 minutes there;
+   * in between, the teams found on PRs are asked for directly).
+   */
+  async scanTeams(org, meta, groupIds) {
+    if (meta.scan && !meta.scan.complete && Date.now() - meta.scan.at < SCAN_EVERY_BIG) return null;
+    let r;
+    try {
+      r = await this.ado.searchPrs(org, {}, SCAN_MAX);
+    } catch (e) {
+      if (e.code === 'AUTH_REQUIRED') throw e;
+      this.log.warn(`${org}: could not look for PRs for your teams (${friendly(e)})`);
+      return null;
+    }
+    const hits = new Set();
+    for (const pr of r.list) for (const rv of pr.reviewers || []) if (rv && groupIds.has(rv.id)) hits.add(rv.id);
+    meta.teamHits = [...hits];
+    if (!r.complete && !(meta.scan && !meta.scan.complete)) this.log.info(`${org}: more than ${SCAN_MAX} active PRs, team PRs are checked every 10 minutes`);
+    meta.scan = { at: Date.now(), complete: r.complete };
+    return r;
+  }
+
+  /** Projects and repositories to pick from in Settings. */
+  async repoChoices(org) {
+    if (!this.orgList().some((o) => o.name === org)) throw new HttpError(404, 'Unknown organization');
+    const repos = await this.ado.repositories(org);
+    const projects = new Map();
+    for (const r of repos) {
+      if (!projects.has(r.projectId)) projects.set(r.projectId, { id: r.projectId, name: r.project, repos: [] });
+      projects.get(r.projectId).repos.push({ id: r.id, name: r.name });
+    }
+    const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    const list = [...projects.values()].sort(byName);
+    for (const p of list) p.repos.sort(byName);
+    const w = this.settings.repos[org];
+    return { org, projects: list, pick: w ? w.pick : [], only: !!(w && w.only) };
   }
 
   async loadSizes(items) {
@@ -530,6 +645,25 @@ class Inbox {
     }
     if (patch.includeTeams !== undefined) {
       for (const m of this.orgMeta.values()) m.groupsAt = 0;
+      // Team PRs that appear now aren't news.
+      this.state.baselined = {};
+      orgsChanged = true;
+    }
+    if (patch.setRepos && typeof patch.setRepos.org === 'string') {
+      const { org, pick, only } = patch.setRepos;
+      const clean = (Array.isArray(pick) ? pick : []).slice(0, 300).filter((p) => p && typeof p === 'object').map((p) => ({
+        kind: p.kind === 'project' ? 'project' : 'repo',
+        id: String(p.id || ''),
+        name: String(p.name || '').slice(0, 200),
+        projectId: String(p.projectId || p.id || ''),
+        project: String(p.project || '').slice(0, 200),
+      })).filter((p) => ID.test(p.id) && ID.test(p.projectId));
+      const repos = { ...s.repos };
+      if (clean.length) repos[org] = { pick: clean, only: !!only };
+      else delete repos[org];
+      s.repos = repos;
+      // PRs that were already open in newly watched repositories aren't news.
+      delete this.state.baselined[org];
       orgsChanged = true;
     }
     this.save();

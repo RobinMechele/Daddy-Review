@@ -32,6 +32,7 @@ const S = {
   theme: store.get('theme', 'auto'),
   setupDismissed: store.get('setupDismissed', false),
   mini: params.get('mini') === '1',
+  repoPicker: null,
 };
 if (S.session && Date.now() - S.session.at > 3 * 36e5) S.session = null;
 // Tidy the address, but the mini window must keep ?mini=1 to survive a reload.
@@ -194,10 +195,88 @@ function render() {
   const drawer = $('#drawer');
   const typing = drawer.contains(document.activeElement) && document.activeElement.matches('input');
   if (!typing) patch(drawer, V.drawer(S));
-  patch($('#modal'), V.shortcuts(S));
+  renderModal();
   patch($('#assistant'), V.assistant(S));
   S.anim = null; // entrance animations play once, not on every data refresh
   pip.update();
+}
+
+/** Shortcuts and the repository picker (keeps your typing and scroll position). */
+function renderModal() {
+  const modal = $('#modal');
+  const filter = $('#repo-filter');
+  if (S.repoPicker && filter && document.activeElement === filter) {
+    patch($('#picker-body'), V.pickerBody(S));
+    modal._html = null;
+    return;
+  }
+  const list = modal.querySelector('.picker-list');
+  const scroll = list ? list.scrollTop : 0;
+  if (patch(modal, V.shortcuts(S) + V.repoPicker(S))) {
+    const again = modal.querySelector('.picker-list');
+    if (again) again.scrollTop = scroll;
+  }
+}
+
+// ---- repository picker -----------------------------------------------------------------
+
+async function openRepoPicker(org) {
+  S.repoPicker = { org, loading: true, error: null, projects: [], pick: new Map(), only: false, filter: '', open: new Set(), saving: false };
+  render();
+  try {
+    const r = await api('GET', `/api/repos?org=${encodeURIComponent(org)}`);
+    if (!S.repoPicker || S.repoPicker.org !== org) return;
+    Object.assign(S.repoPicker, {
+      loading: false,
+      projects: r.projects,
+      pick: new Map(r.pick.map((p) => [`${p.kind}:${p.id}`, p])),
+      only: r.only,
+    });
+  } catch (e) {
+    if (!S.repoPicker) return;
+    Object.assign(S.repoPicker, { loading: false, error: e.message });
+  }
+  render();
+  $('#repo-filter')?.focus();
+}
+
+function togglePick(el) {
+  const P = S.repoPicker;
+  if (!P) return;
+  const { pick: kind, id } = el.dataset;
+  const key = `${kind}:${id}`;
+  if (!el.checked) {
+    P.pick.delete(key);
+  } else if (kind === 'project') {
+    const p = P.projects.find((x) => x.id === id);
+    if (!p) return;
+    // The whole project replaces single repositories in it.
+    for (const r of p.repos) P.pick.delete(`repo:${r.id}`);
+    P.pick.set(key, { kind, id, name: p.name, projectId: p.id, project: p.name });
+  } else {
+    const p = P.projects.find((x) => x.id === el.dataset.project);
+    const r = p && p.repos.find((x) => x.id === id);
+    if (!r) return;
+    P.pick.set(key, { kind, id, name: r.name, projectId: p.id, project: p.name });
+  }
+  if (!P.pick.size) P.only = false;
+  render();
+}
+
+async function saveRepoPicker() {
+  const P = S.repoPicker;
+  if (!P || P.saving) return;
+  P.saving = true;
+  render();
+  const ok = await saveSettings({ setRepos: { org: P.org, pick: [...P.pick.values()], only: P.only } });
+  if (S.repoPicker === P) {
+    P.saving = false;
+    if (ok) {
+      S.repoPicker = null;
+      toast(P.pick.size === 1 ? `Watching ${[...P.pick.values()][0].name}` : P.pick.size ? 'Saved' : 'All repositories', { kind: 'ok' });
+    }
+  }
+  render();
 }
 
 // ---- actions -------------------------------------------------------------------------
@@ -392,6 +471,27 @@ const actions = {
     return saveSettings({ toggleOrg: { name: org, enabled: !(o && o.enabled) } });
   },
   'remove-org': ({ org }) => saveSettings({ removeOrg: org }),
+  repos: ({ org }) => openRepoPicker(org),
+  'repos-close': () => { S.repoPicker = null; render(); },
+  'repos-expand': ({ id }) => {
+    const open = S.repoPicker && S.repoPicker.open;
+    if (!open) return;
+    if (open.has(id)) open.delete(id);
+    else open.add(id);
+    render();
+  },
+  'repos-only': () => {
+    if (!S.repoPicker || !S.repoPicker.pick.size) return;
+    S.repoPicker.only = !S.repoPicker.only;
+    render();
+  },
+  'repos-clear': () => {
+    if (!S.repoPicker) return;
+    S.repoPicker.pick.clear();
+    S.repoPicker.only = false;
+    render();
+  },
+  'repos-save': () => saveRepoPicker(),
   goal: ({ d }) => saveSettings({ dailyGoal: Math.min(50, Math.max(1, S.data.settings.dailyGoal + Number(d))) }),
   async 'notify-perm'() {
     if (!('Notification' in window)) return;
@@ -477,8 +577,15 @@ function bindEvents(doc, win) {
     if (fn) fn({ ...el.dataset }, e);
   });
   doc.addEventListener('change', (e) => {
+    const pick = e.target.closest('[data-pick]');
+    if (pick) return togglePick(pick);
     const el = e.target.closest('[data-change]');
     if (el) saveSettings({ [el.dataset.change]: Number(el.value) });
+  });
+  doc.addEventListener('input', (e) => {
+    if (e.target.id !== 'repo-filter' || !S.repoPicker) return;
+    S.repoPicker.filter = e.target.value.trim();
+    render();
   });
   doc.addEventListener('submit', async (e) => {
     const form = e.target.closest('[data-form="add-org"]');
@@ -514,6 +621,12 @@ function moveSelection(delta) {
 }
 
 function onKey(e) {
+  if (S.repoPicker && e.key === 'Escape') {
+    e.preventDefault();
+    S.repoPicker = null;
+    render();
+    return;
+  }
   if (e.target.id === 'filter' && e.key === 'Escape') {
     e.target.value = '';
     S.filter = '';
@@ -521,7 +634,7 @@ function onKey(e) {
     render();
     return;
   }
-  if (e.target.closest && e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.closest && e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey || S.repoPicker) return;
   if (e.key === '/' && S.data && S.data.auth.signedIn && !S.mini) {
     e.preventDefault();
     $('#filter')?.focus();

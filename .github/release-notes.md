@@ -1,15 +1,12 @@
-## What's new in 1.1
+## What's new in 1.2
 
-- **Automatic updates**: new versions download in the background; restart when it suits you (or it installs the next time the app quits).
-- **Comments on your PRs**: see which threads are waiting for your answer, and get a popup when someone comments.
-- **Profile pictures** from Azure DevOps.
-- **Search** the list (press `/`).
-- **Only during work hours**: optional, no popups in the evening or weekend.
-- **Ctrl+Alt+R** shows or hides Daddy Review from anywhere.
-- **Friday recap** of your week.
-- **Personal Microsoft accounts** can sign in too.
+- **Pick your repositories**: Settings → under an organization → *All repositories*. Every active PR in the repositories or projects you pick shows up, also when it doesn't ask for you. Switch on *Only these* to hide the rest (your own PRs always stay).
+- **More of your PRs are found**: PRs for your teams now show up when you're in the team through a group (e.g. an Entra ID group), and organizations with hundreds of PRs are read to the end.
+- **To review is your queue**: a PR assigned to your team stays in *To review* until *you* vote, also when a teammate already approved it (it's marked and ranked lower). *Done* is only what you approved.
+- **Drafts**: when a draft is published you get a *Ready for review* popup.
+- Settings shows how many open PRs each organization has, and how many come in through your teams.
 
-> Coming from 1.0.0? Install this version once by hand; from here on Daddy Review updates itself.
+> On 1.1, Daddy Review updates itself. Still on 1.0.0? Install this version once by hand.
 
 ## Install
 

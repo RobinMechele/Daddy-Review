@@ -49,6 +49,7 @@ function toItem(pr, ctx) {
     created: pr.creationDate || new Date().toISOString(),
     draft: !!pr.isDraft,
     conflicts: pr.mergeStatus === 'conflicts',
+    autoComplete: !!(pr.autoCompleteSetBy && pr.autoCompleteSetBy.id),
     source: shortRef(pr.sourceRefName),
     target: shortRef(pr.targetRefName),
     commit: (pr.lastMergeSourceCommit && pr.lastMergeSourceCommit.commitId) || null,
@@ -67,22 +68,23 @@ function toItem(pr, ctx) {
 
 /**
  * Where a PR belongs:
- *  todo    - needs your review (never voted, or new pushes since you voted)
+ *  todo    - needs your review (you haven't voted, or new pushes since you voted)
  *  waiting - you asked for changes, ball is in the author's court
- *  done    - you approved (or your team already covered it)
+ *  done    - you approved it (it leaves once it's completed)
  *  mine    - you created it
  *  draft   - not ready yet
+ * Only your own vote moves a PR out of todo: a teammate voting for your team
+ * doesn't mean you reviewed it (it just ranks lower, marked "covered").
  */
 function classify(item, snap) {
   if (item.mine) return { state: 'mine', updated: false };
   if (item.declined) return { state: 'hidden', updated: false };
   if (item.draft) return { state: 'draft', updated: false };
-  if (item.myVote === 0 && !item.direct && item.teamVote !== 0) {
-    return { state: item.teamVote < 0 ? 'waiting' : 'done', updated: false, covered: true };
-  }
   const changedSinceVote = item.myVote !== 0 && !!(snap && snap.votedCommit) && !!item.commit && snap.votedCommit !== item.commit;
   if (item.myVote === 0 || changedSinceVote) {
-    return { state: 'todo', updated: changedSinceVote || !!(snap && snap.resetByPush) };
+    const r = { state: 'todo', updated: changedSinceVote || !!(snap && snap.resetByPush) };
+    if (item.myVote === 0 && !item.direct && item.teamVote !== 0) r.covered = true;
+    return r;
   }
   return { state: item.myVote < 0 ? 'waiting' : 'done', updated: false };
 }
@@ -122,6 +124,7 @@ function score(item, now = Date.now()) {
     if (f <= 5) reasons.push('quick');
   }
   if (item.conflicts) s -= 15;
+  if (item.covered) s -= 15;
   if (ageH >= 48) reasons.push('old');
   return { score: Math.round(s), reasons };
 }
@@ -167,7 +170,11 @@ function threadDetails(threads) {
 
 function event(type, it, extra = {}) {
   const base = { type, key: it.key, org: it.org, prTitle: it.title, url: it.url };
-  if (type === 'new') return { ...base, title: 'New review request', body: `${it.title} · ${it.author.name}`, ...extra };
+  if (type === 'new') {
+    // A PR in a repository you watch that doesn't ask for you by name or team.
+    const title = it.direct || it.team ? 'New review request' : `New PR in ${it.repo}`;
+    return { ...base, title, body: `${it.title} · ${it.author.name}`, ...extra };
+  }
   if (type === 'updated') return { ...base, title: 'Updated since your review', body: it.title, ...extra };
   return { ...base, ...extra };
 }
@@ -216,7 +223,7 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
     if (!p) {
       if (fresh && c.state === 'todo') events.push(event('new', it));
     } else {
-      if (c.state === 'todo' && p.state === 'draft') events.push(event('new', it));
+      if (c.state === 'todo' && p.state === 'draft') events.push(event('new', it, { title: 'Ready for review' }));
       else if (c.state === 'todo' && c.updated && p.state !== 'todo') events.push(event('updated', it));
       if (it.mine && it.comments && typeof p.othersComments === 'number' && it.comments.fromOthers > p.othersComments) {
         const who = it.comments.lastBy || 'Someone';

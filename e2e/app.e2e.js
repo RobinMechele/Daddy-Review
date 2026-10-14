@@ -62,7 +62,7 @@ async function main() {
     await win.waitForSelector('.hero .next-title', { timeout: 20000 });
     assert.equal(await win.textContent('.hero .next-title'), 'Fix rounding error in invoice totals');
     const counts = await win.$$eval('.tab .count', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(counts, ['7', '1', '3', '3']);
+    assert.deepEqual(counts, ['9', '1', '3', '2']);
     step('signs in and loads the review queue');
 
     await win.waitForFunction(() => [...document.querySelectorAll('#list img.av-img')].some((i) => i.complete && i.naturalWidth > 1), null, { timeout: 10000 });
@@ -92,8 +92,26 @@ async function main() {
     await win.waitForSelector('.drawer');
     assert.ok(await win.isVisible('.drawer [data-setting="quietHours"]'));
     assert.ok(await win.isVisible('.drawer [data-setting="hotkey"]'));
-    await win.click('.drawer [data-act="close-settings"]');
     step('settings: work-hours-only popups and global shortcut');
+
+    // Watch a repository: every active PR in it shows up, also ones that don't ask for you.
+    assert.match(await win.textContent('.drawer [data-act="repos"][data-org="contoso"]'), /All repositories/);
+    await win.click('.drawer [data-act="repos"][data-org="contoso"]');
+    await win.waitForSelector('.picker [data-pick="repo"]');
+    await win.fill('#repo-filter', 'mobile');
+    await win.waitForFunction(() => document.querySelectorAll('.picker [data-pick="repo"]').length === 1);
+    await win.screenshot({ path: path.join(SHOTS, 'app-repos.png') });
+    await win.check('.picker [data-pick="repo"]');
+    await win.click('.picker [data-act="repos-save"]');
+    await win.waitForSelector('.picker', { state: 'detached' });
+    assert.match(await win.textContent('.drawer [data-act="repos"][data-org="contoso"]'), /Watching mobile-app/);
+    await win.click('.drawer [data-act="close-settings"]');
+    await win.waitForFunction(() => document.querySelector('.tab[data-tab="todo"] .count')?.textContent === '10');
+    await win.fill('#filter', 'offline mode');
+    await win.waitForFunction(() => document.querySelectorAll('#list .cards > .card').length === 1);
+    assert.ok(await win.isVisible('#list .card .chip.icon-only'), 'marked as from a watched repository');
+    await win.fill('#filter', '');
+    step('pick repositories to watch');
 
     await win.click('.hero [data-act="vote"]');
     await win.waitForSelector('.toast.in');

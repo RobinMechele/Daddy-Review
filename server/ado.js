@@ -30,6 +30,7 @@ class Ado {
     this.orgTenant = new Map();
     this.orgLevelPrs = new Map();
     this.projectCache = new Map();
+    this.repoCache = new Map();
   }
 
   orgUrl(org) {
@@ -133,24 +134,59 @@ class Ado {
     return { id: u.id, name: u.providerDisplayName || u.customDisplayName || '' };
   }
 
-  /** Teams/groups the user is a direct member of (to find "assigned to my team" PRs). */
+  /**
+   * Teams and groups you're in, also through nested groups (e.g. an Entra group
+   * inside a team), so "assigned to my team" PRs are found.
+   */
   async groups(org, userId) {
     const base = `${this.config.VSSPS_BASE}/${encodeURIComponent(org)}/_apis/identities`;
-    const me = await this.get(`${base}?${qs({ identityIds: userId, queryMembership: 'Direct', 'api-version': '7.1' })}`, org);
-    const ident = me && Array.isArray(me.value) ? me.value.find(Boolean) : null;
-    const descriptors = ((ident && ident.memberOf) || [])
-      .map((d) => (typeof d === 'string' ? d : d && d.identityType ? `${d.identityType};${d.identifier}` : null))
-      .filter(Boolean)
-      .slice(0, 100);
-    const out = [];
-    for (let i = 0; i < descriptors.length; i += 25) {
-      const chunk = descriptors.slice(i, i + 25).join(',');
-      const r = await this.get(`${base}?${qs({ descriptors: chunk, 'api-version': '7.1' })}`, org);
-      for (const g of (r && r.value) || []) {
-        if (g && g.id) out.push({ id: g.id, name: g.providerDisplayName || g.customDisplayName || '' });
+    const found = new Map();
+    let firstError = null;
+    try {
+      let me = null;
+      for (const membership of ['Expanded', 'Direct']) {
+        try {
+          me = await this.get(`${base}?${qs({ identityIds: userId, queryMembership: membership, 'api-version': '7.1' })}`, org);
+          break;
+        } catch (e) {
+          if (e.code === 'AUTH_REQUIRED' || membership === 'Direct') throw e;
+          this.log.info(`${org}: nested group membership unavailable (${e.message}), using direct membership`);
+        }
       }
+      const ident = me && Array.isArray(me.value) ? me.value.find(Boolean) : null;
+      const descriptors = [...new Set(((ident && ident.memberOf) || [])
+        .map((d) => (typeof d === 'string' ? d : d && d.identityType ? `${d.identityType};${d.identifier}` : null))
+        .filter(Boolean))]
+        .slice(0, 600);
+      // Small chunks keep the URL short.
+      for (let i = 0; i < descriptors.length; i += 15) {
+        const chunk = descriptors.slice(i, i + 15).join(',');
+        try {
+          const r = await this.get(`${base}?${qs({ descriptors: chunk, 'api-version': '7.1' })}`, org);
+          for (const g of (r && r.value) || []) {
+            if (g && g.id) found.set(g.id, { id: g.id, name: g.providerDisplayName || g.customDisplayName || '' });
+          }
+        } catch (e) {
+          if (e.code === 'AUTH_REQUIRED') throw e;
+          firstError = firstError || e;
+        }
+      }
+    } catch (e) {
+      if (e.code === 'AUTH_REQUIRED') throw e;
+      firstError = firstError || e;
     }
-    return out.filter((g) => !SKIP_GROUPS.test(g.name)).slice(0, 30);
+    // The teams you're in, as Azure DevOps itself sees them.
+    try {
+      const r = await this.get(`${this.orgUrl(org)}/_apis/teams?${qs({ $mine: 'true', $top: 1000, 'api-version': '7.1-preview.3' })}`, org);
+      for (const t of (r && r.value) || []) {
+        if (t && t.id && !found.has(t.id)) found.set(t.id, { id: t.id, name: t.projectName ? `[${t.projectName}]\\${t.name}` : t.name || '' });
+      }
+    } catch (e) {
+      if (e.code === 'AUTH_REQUIRED') throw e;
+      firstError = firstError || e;
+    }
+    if (!found.size && firstError) throw firstError;
+    return [...found.values()].filter((g) => !SKIP_GROUPS.test(g.name));
   }
 
   async projects(org) {
@@ -164,26 +200,68 @@ class Ado {
 
   // ---- pull requests --------------------------------------------------------
 
-  /** Active PRs in an organization matching the search criteria (all projects). */
-  async pullRequests(org, criteria) {
-    const query = qs({ 'searchCriteria.status': 'active', ...criteria, $top: 500, 'api-version': '7.1' });
+  /** Active PRs from one list endpoint, page by page: { list, complete }. */
+  async pagedPrs(url, org, criteria, max) {
+    const PAGE = 500;
+    const list = [];
+    for (let skip = 0; skip < max; skip += PAGE) {
+      const query = qs({ 'searchCriteria.status': 'active', ...criteria, $top: PAGE, $skip: skip || undefined, 'api-version': '7.1' });
+      const r = await this.get(`${url}?${query}`, org);
+      const page = (r && r.value) || [];
+      list.push(...page);
+      if (page.length < PAGE) return { list, complete: true };
+    }
+    return { list, complete: false };
+  }
+
+  /** Active PRs in an organization (all projects) matching the criteria: { list, complete }. */
+  async searchPrs(org, criteria = {}, max = 1500) {
     if (this.orgLevelPrs.get(org) !== false) {
       try {
-        const r = await this.get(`${this.orgUrl(org)}/_apis/git/pullrequests?${query}`, org);
+        const r = await this.pagedPrs(`${this.orgUrl(org)}/_apis/git/pullrequests`, org, criteria, max);
         this.orgLevelPrs.set(org, true);
-        return (r && r.value) || [];
+        return r;
       } catch (e) {
-        if (e.status !== 404 && e.status !== 400) throw e;
+        if ((e.status !== 404 && e.status !== 400) || this.orgLevelPrs.get(org) === true) throw e;
         this.log.info(`${org}: org-wide PR search unavailable, querying per project`);
         this.orgLevelPrs.set(org, false);
       }
     }
     const projects = await this.projects(org);
-    const lists = await mapLimit(projects, 4, (p) =>
-      this.get(`${this.orgUrl(org)}/${encodeURIComponent(p.id)}/_apis/git/pullrequests?${query}`, org)
-        .then((r) => (r && r.value) || [])
-        .catch(() => []));
-    return lists.flat();
+    const results = await mapLimit(projects, 4, (p) =>
+      this.pagedPrs(`${this.orgUrl(org)}/${encodeURIComponent(p.id)}/_apis/git/pullrequests`, org, criteria, max)
+        .catch((e) => {
+          if (e.code === 'AUTH_REQUIRED') throw e;
+          this.log.warn(`${org}/${p.name}: ${e.message}`);
+          return { list: [], complete: true };
+        }));
+    return { list: results.flatMap((r) => r.list), complete: results.every((r) => r.complete) };
+  }
+
+  /** Active PRs in an organization matching the search criteria (all projects). */
+  async pullRequests(org, criteria) {
+    return (await this.searchPrs(org, criteria)).list;
+  }
+
+  /** Every active PR in one project, or in one repository: { list, complete }. */
+  scopePrs(org, { projectId, repoId }) {
+    const e = encodeURIComponent;
+    const url = repoId
+      ? `${this.orgUrl(org)}/${e(projectId)}/_apis/git/repositories/${e(repoId)}/pullrequests`
+      : `${this.orgUrl(org)}/${e(projectId)}/_apis/git/pullrequests`;
+    return this.pagedPrs(url, org, {}, 1500);
+  }
+
+  /** All repositories you can see in an organization. */
+  async repositories(org) {
+    const c = this.repoCache.get(org);
+    if (c && Date.now() - c.at < 10 * 60e3) return c.list;
+    const r = await this.get(`${this.orgUrl(org)}/_apis/git/repositories?api-version=7.1`, org);
+    const list = ((r && r.value) || [])
+      .filter((x) => x && x.id && x.project && !x.isDisabled)
+      .map((x) => ({ id: x.id, name: x.name || '', projectId: x.project.id, project: x.project.name || '' }));
+    this.repoCache.set(org, { at: Date.now(), list });
+    return list;
   }
 
   prBase(item) {

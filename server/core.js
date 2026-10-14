@@ -112,6 +112,7 @@ function createCore(overrides = {}) {
       return { ok: true };
     },
     'GET /api/pr': ({ query }) => inbox.details(String(query.key)),
+    'GET /api/repos': ({ query }) => inbox.repoChoices(String(query.org || '')),
     'GET /api/autostart': () => (host.autostart ? host.autostart.status() : { supported: false, enabled: false }),
     'POST /api/autostart': ({ body }) => {
       if (!host.autostart) throw new HttpError(400, 'Not available here');

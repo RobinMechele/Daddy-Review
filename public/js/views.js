@@ -53,8 +53,10 @@ function chipsFor(it) {
   if (it.updated) out.push(chip(`${icon('spark')}Updated`, 'accent', 'New changes since your review'));
   if (it.required) out.push(chip('Required', 'warn', 'You (or your team) are a required reviewer'));
   if (it.team && !it.direct) out.push(chip(`${icon('users')}${esc(it.team)}`, '', 'Assigned to your team'));
-  if (it.covered) out.push(chip('Team covered', 'muted', 'A teammate already voted for your team'));
+  if (it.covered) out.push(chip(it.teamVote > 0 ? 'Teammate approved' : 'Teammate: changes', 'muted', 'A teammate already voted for your team'));
+  if (it.watched && !it.direct && !it.team && !it.mine) out.push(chip(icon('eye'), 'muted icon-only', 'In a repository you watch'));
   if (it.conflicts) out.push(chip(`${icon('alert')}Conflicts`, 'bad', 'Merge conflicts, the author has to fix these first'));
+  if (it.autoComplete && it.state !== 'todo') out.push(chip('Auto-complete', 'muted', 'Completes by itself once all policies pass'));
   for (const l of it.labels || []) out.push(chip(esc(l), 'label'));
   return out.join('');
 }
@@ -84,8 +86,8 @@ function lead(it) {
     return `<div class="lead ${cls}" title="${title}">${icon(m.ready ? 'check' : m.blocked ? 'pause' : 'clock')}<small>${m.ok}/${m.total}</small></div>`;
   }
   if (it.state === 'waiting' || it.state === 'done') {
-    const v = VOTE_META[it.covered ? it.teamVote : it.myVote] || VOTE_META[0];
-    return `<div class="lead v-${v.cls}" title="${esc(it.covered ? `Team: ${v.label}` : v.label)}">${icon(it.covered ? 'users' : v.icon)}</div>`;
+    const v = VOTE_META[it.myVote] || VOTE_META[0];
+    return `<div class="lead v-${v.cls}" title="${esc(v.label)}">${icon(v.icon)}</div>`;
   }
   if (it.state === 'draft') return `<div class="lead s-none" title="Draft">${icon('pr')}</div>`;
   if (!it.size) return `<div class="lead s-none" title="Size unknown">${icon('pr')}</div>`;
@@ -238,9 +240,9 @@ export function setupStrip(S) {
 
 export function tabs(S) {
   const c = S.data.inbox.counts;
-  const t = (id, label, n, hot) => `<button class="tab ${S.tab === id ? 'active' : ''}" data-act="tab" data-tab="${id}">${label}${n ? `<span class="count ${hot ? 'hot' : ''}">${n}</span>` : ''}</button>`;
+  const t = (id, label, n, title, hot) => `<button class="tab ${S.tab === id ? 'active' : ''}" data-act="tab" data-tab="${id}" title="${title}">${label}${n ? `<span class="count ${hot ? 'hot' : ''}">${n}</span>` : ''}</button>`;
   return `<nav class="tabs" role="tablist">
-    ${t('todo', 'To review', c.todo, true)}${t('waiting', 'Waiting', c.waiting)}${t('mine', 'Mine', c.mine)}${t('done', 'Done', c.done)}
+    ${t('todo', 'To review', c.todo, 'Waiting for your review', true)}${t('waiting', 'Waiting', c.waiting, 'You asked for changes')}${t('mine', 'Mine', c.mine, 'Your open PRs')}${t('done', 'Done', c.done, 'You approved these. They leave once completed.')}
   </nav>`;
 }
 
@@ -363,10 +365,13 @@ export function drawer(S) {
 
     <section>
       <h3>Organizations</h3>
-      ${d.orgs.map((o) => `<div class="row">
-        <span class="grow">${esc(o.name)}${o.error ? `<small class="err">${esc(o.error)}</small>` : ''}</span>
-        ${o.manual ? `<button class="icon-btn sm" data-act="remove-org" data-org="${esc(o.name)}" title="Remove">${icon('trash')}</button>` : ''}
-        ${sw(o.enabled, `data-act="org" data-org="${esc(o.name)}" aria-label="${esc(o.name)}"`)}
+      ${d.orgs.map((o) => `<div class="org">
+        <div class="row">
+          <span class="grow">${esc(o.name)}${o.error ? `<small class="err">${esc(o.error)}</small>` : o.enabled && o.counts ? `<small>${orgStats(o.counts)}</small>` : ''}</span>
+          ${o.manual ? `<button class="icon-btn sm" data-act="remove-org" data-org="${esc(o.name)}" title="Remove">${icon('trash')}</button>` : ''}
+          ${sw(o.enabled, `data-act="org" data-org="${esc(o.name)}" aria-label="${esc(o.name)}"`)}
+        </div>
+        ${o.enabled ? `<button class="scope-btn ${o.watch ? 'on' : ''}" data-act="repos" data-org="${esc(o.name)}" title="Pick repositories">${icon('repo')}<span>${scopeLabel(o.watch)}</span>${icon('chevron')}</button>` : ''}
       </div>`).join('') || '<p class="muted small">No organizations found yet.</p>'}
       <form class="add-org" data-form="add-org"><input name="org" placeholder="Add org name or URL" autocomplete="off" spellcheck="false"><button class="btn sm">${icon('plus')}Add</button></form>
       ${d.inbox.discoverError ? '<p class="small muted">Couldn\'t list your organizations automatically. Add yours above.</p>' : ''}
@@ -399,6 +404,67 @@ export function drawer(S) {
     </section>
     <footer><span>v${esc(d.app.version)}</span><button class="link" data-act="shortcuts">${icon('keyboard')}Shortcuts</button></footer>
   </aside>`;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function orgStats(c) {
+  return [plural(c.prs, 'open PR'), c.viaTeams ? `${c.viaTeams} via your teams` : null].filter(Boolean).join(' · ');
+}
+
+function scopeLabel(w) {
+  if (!w) return 'All repositories';
+  const names = w.names.join(', ') + (w.count > w.names.length ? ` +${w.count - w.names.length}` : '');
+  return w.only ? `Only ${names}` : `Watching ${names}`;
+}
+
+// ---- repository picker ------------------------------------------------------------------
+
+const pickKey = (kind, id) => `${kind}:${id}`;
+
+/** The list part of the picker (re-rendered on its own while you type in the filter). */
+export function pickerBody(S) {
+  const P = S.repoPicker;
+  if (P.loading) return '<div class="picker-list"><div class="skeleton line"></div><div class="skeleton line short"></div><div class="skeleton line"></div></div>';
+  if (P.error) return `<div class="picker-list"><p class="error">${esc(P.error)}</p><button class="btn sm" data-act="repos" data-org="${esc(P.org)}">${icon('refresh')}Try again</button></div>`;
+  const q = P.filter.toLowerCase();
+  const groups = P.projects.map((p) => {
+    const whole = P.pick.has(pickKey('project', p.id));
+    const projectHit = !q || p.name.toLowerCase().includes(q);
+    const repos = projectHit ? p.repos : p.repos.filter((r) => r.name.toLowerCase().includes(q));
+    if (!repos.length && !projectHit) return '';
+    const picked = p.repos.filter((r) => P.pick.has(pickKey('repo', r.id))).length;
+    const open = q || whole || picked || P.projects.length <= 3 || P.open.has(p.id);
+    return `<div class="pk-group">
+      <div class="pk-row pk-project">
+        <label><input type="checkbox" data-pick="project" data-id="${esc(p.id)}" ${whole ? 'checked' : ''}><b>${esc(p.name)}</b></label>
+        <small>${whole ? 'whole project' : picked ? `${picked}/${p.repos.length}` : p.repos.length}</small>
+        ${q || P.projects.length <= 3 ? '' : `<button class="icon-btn sm pk-toggle ${open ? 'open' : ''}" data-act="repos-expand" data-id="${esc(p.id)}" title="${open ? 'Hide' : 'Show'} repositories">${icon('chevron')}</button>`}
+      </div>
+      ${open ? repos.map((r) => `<label class="pk-row pk-repo ${whole ? 'implied' : ''}"><input type="checkbox" data-pick="repo" data-id="${esc(r.id)}" data-project="${esc(p.id)}" ${whole || P.pick.has(pickKey('repo', r.id)) ? 'checked' : ''} ${whole ? 'disabled' : ''}>${icon('repo')}<span>${esc(r.name)}</span></label>`).join('') : ''}
+    </div>`;
+  }).join('');
+  return `<div class="picker-list">${groups || `<p class="muted small">No repositories match “${esc(P.filter)}”.</p>`}</div>`;
+}
+
+export function repoPicker(S) {
+  const P = S.repoPicker;
+  if (!P) return '';
+  const n = P.pick.size;
+  return `<div class="overlay top" data-act="repos-close"></div>
+  <div class="modal picker" role="dialog" aria-label="Repositories">
+    <header class="picker-head"><h2>${icon('repo')}Repositories</h2><span class="pill">${esc(P.org)}</span>
+      <button class="icon-btn sm" data-act="repos-close" title="Close (Esc)">${icon('x')}</button></header>
+    <p class="picker-hint">Every active PR in the ones you pick shows up, also when it doesn't ask for you.</p>
+    <label class="search">${icon('search')}<input id="repo-filter" type="search" placeholder="Filter" value="${esc(P.filter)}" autocomplete="off" spellcheck="false" aria-label="Filter repositories"></label>
+    <div id="picker-body">${pickerBody(S)}</div>
+    <div class="row"><span class="grow">Only these<small>Hide PRs from other repositories. Yours always stay.</small></span>${sw(P.only, `data-act="repos-only" aria-label="Only these repositories" ${n ? '' : 'disabled'}`)}</div>
+    <footer class="picker-foot">
+      <span class="grow muted small">${n ? `${plural(n, 'pick')}` : 'All repositories'}</span>
+      ${n ? '<button class="btn ghost sm" data-act="repos-clear">Clear</button>' : ''}
+      <button class="btn primary sm" data-act="repos-save" ${P.loading || P.error || P.saving ? 'disabled' : ''}>${P.saving ? '<span class="spinner"></span>' : ''}Save</button>
+    </footer>
+  </div>`;
 }
 
 function updateRow(app) {
