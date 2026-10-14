@@ -192,13 +192,44 @@ function render() {
   const keys = S.data.inbox.items.map((i) => i.key);
   if (!S.seen) S.seen = new Set(S.data.inbox.fetchedAt ? keys : []);
   else keys.forEach((k) => S.seen.add(k));
-  const drawer = $('#drawer');
-  const typing = drawer.contains(document.activeElement) && document.activeElement.matches('input');
-  if (!typing) patch(drawer, V.drawer(S));
+  renderDrawer();
   renderModal();
   patch($('#assistant'), V.assistant(S));
   S.anim = null; // entrance animations play once, not on every data refresh
   pip.update();
+}
+
+/** A selector that finds the same control again after re-rendering (by its data-* attributes). */
+function selectorFor(el) {
+  if (!el || !el.dataset || !Object.keys(el.dataset).length) return null;
+  return Object.entries(el.dataset).map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(v)}"]`).join('');
+}
+
+/**
+ * Settings: the panel stays put and only its content is updated, so clicking a
+ * switch doesn't make it slide in again, jump to the top or lose focus.
+ */
+function renderDrawer() {
+  const host = $('#drawer');
+  if (!S.settingsOpen) {
+    if (host.firstChild) {
+      host.innerHTML = '';
+      host._html = null;
+    }
+    return;
+  }
+  let panel = host.querySelector('aside.drawer');
+  if (!panel) {
+    host.innerHTML = '<div class="overlay" data-act="close-settings"></div><aside class="drawer" role="dialog" aria-label="Settings"></aside>';
+    panel = host.querySelector('aside.drawer');
+  }
+  const active = panel.contains(document.activeElement) ? document.activeElement : null;
+  if (active && active.matches('input')) return; // typing an organization name
+  const scroll = panel.scrollTop;
+  const focus = selectorFor(active);
+  if (!patch(panel, V.drawer(S))) return;
+  panel.scrollTop = scroll;
+  if (focus) panel.querySelector(focus)?.focus({ preventScroll: true });
 }
 
 /** Shortcuts and the repository picker (keeps your typing and scroll position). */
@@ -307,6 +338,25 @@ async function vote(key, v, { fromSession = false } = {}) {
     else if (S.session && S.session.key === key && v !== 0) endSession();
     setData(data);
     toast(VOTE_META[v].label, { kind: v < 0 ? 'info' : 'ok', action: { label: 'Undo', run: () => undoVote(key, data.prevVote) } });
+  } catch (e) {
+    S.busy.delete(key);
+    toast(e.message, { kind: 'bad' });
+    render();
+    if (e.status === 404) refresh({ quiet: true });
+  }
+}
+
+/** Add yourself as a reviewer of a PR from "Others". */
+async function pickUp(key, { undo = false } = {}) {
+  S.busy.add(key);
+  S.menu = null;
+  render();
+  try {
+    const data = await api('POST', '/api/pickup', { key, undo });
+    S.busy.delete(key);
+    setData(data);
+    if (undo) toast('Removed you as reviewer');
+    else toast('Added to your reviews', { kind: 'ok', action: { label: 'Undo', run: () => pickUp(key, { undo: true }) } });
   } catch (e) {
     S.busy.delete(key);
     toast(e.message, { kind: 'bad' });
@@ -440,6 +490,12 @@ const actions = {
     S.menu = null;
     S.expanded = null;
     render();
+    // Narrow window: keep the chosen tab in view (sideways only).
+    const t = $('#tabs .tab.active');
+    const nav = t && t.parentElement;
+    if (nav && (t.offsetLeft < nav.scrollLeft || t.offsetLeft + t.offsetWidth > nav.scrollLeft + nav.clientWidth)) {
+      nav.scrollLeft = t.offsetLeft - (nav.clientWidth - t.offsetWidth) / 2;
+    }
   },
   expand: ({ key }) => toggleDetails(key),
   open: ({ key }, e) => openPr(key, (e && e.view) || window),
@@ -449,6 +505,7 @@ const actions = {
     render();
   },
   vote: ({ key, vote: v }) => vote(key, Number(v)),
+  pickup: ({ key }) => pickUp(key),
   menu: ({ key }) => {
     S.menu = S.menu === key ? null : key;
     render();
@@ -465,10 +522,19 @@ const actions = {
     S.settingsOpen = false;
     render();
   },
-  toggle: ({ setting }) => saveSettings({ [setting]: !S.data.settings[setting] }),
+  // Switches flip right away; the app catches up in the background.
+  toggle: ({ setting }) => {
+    const value = !S.data.settings[setting];
+    S.data.settings[setting] = value;
+    render();
+    return saveSettings({ [setting]: value });
+  },
   org: ({ org }) => {
     const o = S.data.orgs.find((x) => x.name === org);
-    return saveSettings({ toggleOrg: { name: org, enabled: !(o && o.enabled) } });
+    if (!o) return null;
+    o.enabled = !o.enabled;
+    render();
+    return saveSettings({ toggleOrg: { name: org, enabled: o.enabled } });
   },
   'remove-org': ({ org }) => saveSettings({ removeOrg: org }),
   repos: ({ org }) => openRepoPicker(org),
@@ -492,7 +558,11 @@ const actions = {
     render();
   },
   'repos-save': () => saveRepoPicker(),
-  goal: ({ d }) => saveSettings({ dailyGoal: Math.min(50, Math.max(1, S.data.settings.dailyGoal + Number(d))) }),
+  goal: ({ d }) => {
+    S.data.settings.dailyGoal = Math.min(50, Math.max(1, S.data.settings.dailyGoal + Number(d)));
+    render();
+    return saveSettings({ dailyGoal: S.data.settings.dailyGoal });
+  },
   async 'notify-perm'() {
     if (!('Notification' in window)) return;
     const p = await Notification.requestPermission();
@@ -580,7 +650,10 @@ function bindEvents(doc, win) {
     const pick = e.target.closest('[data-pick]');
     if (pick) return togglePick(pick);
     const el = e.target.closest('[data-change]');
-    if (el) saveSettings({ [el.dataset.change]: Number(el.value) });
+    if (el) {
+      S.data.settings[el.dataset.change] = Number(el.value);
+      saveSettings({ [el.dataset.change]: Number(el.value) });
+    }
   });
   doc.addEventListener('input', (e) => {
     if (e.target.id !== 'repo-filter' || !S.repoPicker) return;
@@ -667,6 +740,7 @@ function onKey(e) {
     2: () => actions.tab({ tab: 'waiting' }),
     3: () => actions.tab({ tab: 'mine' }),
     4: () => actions.tab({ tab: 'done' }),
+    5: () => actions.tab({ tab: 'other' }),
     escape: () => {
       S.menu = null;
       S.settingsOpen = false;

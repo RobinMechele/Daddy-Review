@@ -521,7 +521,9 @@ button.pill { border: 0; cursor: pointer; }
 /* ---- tabs + search ---------------------------------------------------------------- */
 
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-.toolbar .tabs { margin-bottom: 0; }
+.toolbar > #tabs { min-width: 0; max-width: 100%; }
+.toolbar .tabs { margin-bottom: 0; scrollbar-width: none; }
+.toolbar .tabs::-webkit-scrollbar { display: none; }
 .search {
   margin-left: auto;
   display: flex;
@@ -1191,7 +1193,9 @@ kbd {
   .card-actions { grid-column: 1 / -1; justify-content: flex-end; margin-top: -6px; }
   .card-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .menu { top: auto; right: 8px; left: 8px; }
-  .tab { padding: 0 10px; gap: 5px; }
+  .toolbar > #tabs { flex: 1 1 100%; }
+  .toolbar .tabs { width: auto; }
+  .tab { flex: 1 0 auto; justify-content: center; padding: 0 6px; gap: 4px; font-size: 13.5px; }
   .search { flex: 1 1 100%; margin-left: 0; }
   .hero-stats { padding: 14px; }
   .assistant { right: 14px; bottom: 14px; }

@@ -34,7 +34,8 @@ Then click **Sign in with Microsoft**: your browser opens, you pick your work ac
 | **Lives in the tray** | Closing the window keeps it watching in the background; the taskbar shows how many PRs are waiting. Starts with Windows (switch off in Settings or the tray menu). |
 | **Mini window** | ⧉ opens a small always-on-top window with your next PR, so reviews stay in sight while you work. |
 | **All orgs, teams too** | Finds all your Azure DevOps organizations and includes PRs assigned to your teams, also when you're in a team through a group. |
-| **Your repositories** | Settings → *All repositories*: pick repositories or whole projects and every active PR in them shows up. *Only these* hides the rest. |
+| **Others** | Open PRs that don't ask for you (yet). *+* adds you as a reviewer, so it moves to *To review*. |
+| **Your repositories** | Settings → *All repositories*: pick repositories or whole projects; *Others* then only shows PRs from those, and new PRs there pop up. *Only these* hides PRs from other repositories everywhere. |
 | **Goal & streak** | Daily review goal, 7-day chart and a workday streak (weekends never break it). |
 
 <p>
@@ -57,7 +58,7 @@ Everything stays on your PC: the sign-in is kept in your user profile (`%APPDATA
 
 - **"No access" for an organization**: it may belong to another Entra tenant where you're a guest. Sign out and sign in with that account, or switch the org off in Settings.
 - **My organization is missing**: Settings → Organizations → paste its URL (`https://dev.azure.com/your-org`).
-- **A PR is missing**: pick its repository under the organization in Settings (*All repositories*); then every active PR there shows up. The log file lists per organization how many PRs were found.
+- **A PR is missing**: look under *Others* (open PRs that don't ask for you). If you picked repositories in Settings, only those show there. The log file lists per organization how many PRs were found.
 - **No popups**: check Windows *Do not disturb* / notification settings for *Daddy Review*.
 - **Quit completely**: right-click the tray icon → *Quit Daddy Review*.
 - Log file: `%APPDATA%\Daddy Review\daddy-review.log`.

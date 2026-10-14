@@ -1,12 +1,17 @@
-## What's new in 1.2
+## What's new in 1.3
 
-- **Pick your repositories**: Settings → under an organization → *All repositories*. Every active PR in the repositories or projects you pick shows up, also when it doesn't ask for you. Switch on *Only these* to hide the rest (your own PRs always stay).
-- **More of your PRs are found**: PRs for your teams now show up when you're in the team through a group (e.g. an Entra ID group), and organizations with hundreds of PRs are read to the end.
-- **To review is your queue**: a PR assigned to your team stays in *To review* until *you* vote, also when a teammate already approved it (it's marked and ranked lower). *Done* is only what you approved.
-- **Drafts**: when a draft is published you get a *Ready for review* popup.
-- Settings shows how many open PRs each organization has, and how many come in through your teams.
+- **Others**: a new tab with the open PRs that don't ask for you (yet). Click **+** to add yourself as a reviewer; it moves to *To review*. Picked repositories in Settings? Then *Others* only shows PRs from those, and new ones there pop up.
+- **Settings no longer flicker**: switching something doesn't make the panel slide in again or jump to the top, and switches flip right away.
+- Narrow windows: the tabs fit again.
 
-> On 1.1, Daddy Review updates itself. Still on 1.0.0? Install this version once by hand.
+## Also in 1.2
+
+- **Pick your repositories** per organization (Settings → *All repositories*); *Only these* hides the rest (your own PRs always stay).
+- **More of your PRs are found**: also PRs for teams you're in through a group, and big organizations are read to the end.
+- **To review is your queue**: a PR for your team stays there until *you* vote, also when a teammate already approved it. *Done* is only what you approved.
+- **Drafts**: a *Ready for review* popup when a draft is published.
+
+> On 1.1 or newer, Daddy Review updates itself. Still on 1.0.0? Install this version once by hand.
 
 ## Install
 

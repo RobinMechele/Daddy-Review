@@ -90,6 +90,10 @@ function createCore(overrides = {}) {
       const r = await inbox.vote(String(body.key), Number(body.vote), { undo: !!body.undo });
       return { ...state(), prevVote: r.prevVote };
     },
+    'POST /api/pickup': async ({ body }) => {
+      await inbox.pickUp(String(body.key), { undo: !!body.undo });
+      return state();
+    },
     'POST /api/snooze': ({ body }) => {
       const until = body.until === null ? null : body.hours ? Date.now() + Number(body.hours) * 36e5 : body.until;
       inbox.snooze(String(body.key), until);

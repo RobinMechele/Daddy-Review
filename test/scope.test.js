@@ -48,7 +48,7 @@ test('watch repositories: every active PR in them shows, "only these" hides the 
   const pick = [{ kind: 'repo', id: mobile.repos[0].id, name: 'mobile-app', projectId: mobile.id, project: 'Mobile' }];
   r = await core.call('POST', '/api/settings', { body: { setRepos: { org: 'contoso', pick } } });
   assert.equal(r.status, 200);
-  assert.equal(item(r, 1209).state, 'todo');
+  assert.equal(item(r, 1209).state, 'other');
   assert.equal(item(r, 1209).watched, true);
   assert.equal(item(r, 1201).state, 'todo', 'PRs for you elsewhere stay');
   const org = r.data.orgs.find((o) => o.name === 'contoso');
@@ -79,7 +79,7 @@ test('watch repositories: every active PR in them shows, "only these" hides the 
   // Back to everything for you.
   r = await core.call('POST', '/api/settings', { body: { setRepos: { org: 'contoso', pick: [] } } });
   assert.equal(r.data.orgs.find((o) => o.name === 'contoso').watch, null);
-  assert.equal(item(r, 1209), undefined);
+  assert.equal(item(r, 1209).state, 'other', 'without picks, Others has the whole organization');
   assert.equal(r.data.inbox.counts.todo, 9);
 
   // Junk is ignored.
@@ -106,8 +106,9 @@ test('a draft you were added to only when it was published still pops up', async
   const pr = fake.control.newPr({ org: 'contoso', repo: 'infra', author: 'lucas', title: 'Rotate storage keys' });
   pr.isDraft = true;
   pr.reviewers = [];
+  // Doesn't ask for you yet: under "Others".
   let r = await core.call('POST', '/api/refresh');
-  assert.equal(item(r, pr.pullRequestId), undefined);
+  assert.equal(item(r, pr.pullRequestId).state, 'other');
 
   fake.control.publish('contoso', pr.pullRequestId);
   pr.reviewers = [{ id: fake.me.id, displayName: fake.me.name, vote: 0, isRequired: true, isContainer: false }];
@@ -185,4 +186,44 @@ test('after updating, PRs the app now finds (e.g. nested teams) are taken in qui
   assert.equal(r.data.stats.today, 0, 'old votes are not counted as reviews today');
   await new Promise((res) => setTimeout(res, 600));
   assert.deepEqual(toasts, []);
+});
+
+test('Others: open PRs that don\'t ask for you, and adding yourself as a reviewer', async (t) => {
+  const { fake, core } = await signedInCore(t);
+  let r = await core.call('GET', '/api/state');
+  assert.equal(item(r, 1209).state, 'other');
+  assert.equal(r.data.inbox.counts.other, 3);
+  assert.equal(r.data.inbox.counts.todo, 9, 'not counted as waiting for you');
+
+  // A new PR elsewhere in the organization: in Others, but no popup (you don't watch that repository).
+  const quiet = fake.control.newPr({ org: 'contoso', repo: 'infra', author: 'noah', title: 'Tidy pipeline variables' });
+  quiet.reviewers = [];
+  r = await core.call('POST', '/api/refresh');
+  assert.equal(item(r, quiet.pullRequestId).state, 'other');
+  assert.ok(!r.data.events.some((e) => e.key === `contoso#${quiet.pullRequestId}`));
+
+  // Someone adds you as a reviewer: now it's a review request.
+  fake.control.pr('contoso', quiet.pullRequestId).reviewers = [{ id: fake.me.id, displayName: fake.me.name, vote: 0, isRequired: false, isContainer: false }];
+  r = await core.call('POST', '/api/refresh');
+  assert.equal(item(r, quiet.pullRequestId).state, 'todo');
+  assert.equal(r.data.events.find((e) => e.key === `contoso#${quiet.pullRequestId}`).title, 'New review request');
+
+  // Add yourself to one: you become a reviewer in Azure DevOps, it moves to To review.
+  r = await core.call('POST', '/api/pickup', { body: { key: 'contoso#1209' } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(fake.control.log.votes.at(-1), { org: 'contoso', id: 1209, reviewer: fake.me.id, vote: 0 });
+  assert.equal(item(r, 1209).state, 'todo');
+  r = await core.call('POST', '/api/refresh');
+  assert.equal(item(r, 1209).state, 'todo');
+  assert.ok(!r.data.events.some((e) => e.key === 'contoso#1209'), 'no popup for something you did yourself');
+
+  // Undo takes you off again.
+  r = await core.call('POST', '/api/pickup', { body: { key: 'contoso#1209', undo: true } });
+  assert.equal(fake.control.log.votes.at(-1).removed, true);
+  assert.equal(item(r, 1209).state, 'other');
+  assert.ok(!fake.control.pr('contoso', 1209).reviewers.some((x) => x.id === fake.me.id));
+
+  // Approving straight from Others works too.
+  r = await core.call('POST', '/api/vote', { body: { key: 'contoso#1209', vote: 10 } });
+  assert.equal(item(r, 1209).state, 'done');
 });

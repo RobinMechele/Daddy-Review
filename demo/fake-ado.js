@@ -96,6 +96,8 @@ function seed(now = Date.now()) {
   add('contoso', 1208, 'checkout-web', P.mia, 9, 3, 'Remember the last used payment method', [R(TEAMS.payments, 0, { team: true })]);
   // Doesn't ask for you at all: only shows up when you watch the mobile-app repository.
   add('contoso', 1209, 'mobile-app', P.lucas, 12, 5, 'Offline mode for order history', [R(P.mia)]);
+  add('contoso', 1210, 'shared-libs', P.sofia, 28, 3, 'Bump Serilog to 4.1', []);
+  add('contoso', 1211, 'checkout-web', P.noah, 7, 8, 'Lazy-load the address form', [R(P.emma, 10)]);
   add('fabrikam-labs', 312, 'ml-pipeline', P.mia, 8, 6, 'Speed up feature extraction with Arrow', [R(P.me, 0, { isRequired: true })], { labels: ['perf'] });
   add('fabrikam-labs', 309, 'ml-pipeline', P.noah, 30, 2, 'Fix flaky test in tokenizer', [R(P.me)], { conflicts: true });
   // Created by me
@@ -382,6 +384,13 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
         });
       }
       const rv = /^\/reviewers\/([^/]+)$/.exec(rest);
+      if (rv && req.method === 'DELETE') {
+        const id = decodeURIComponent(rv[1]);
+        pr.reviewers = pr.reviewers.filter((x) => x.id !== id);
+        log.votes.push({ org: pr.org, id: pr.pullRequestId, reviewer: id, removed: true });
+        res.writeHead(204);
+        return res.end();
+      }
       if (rv && req.method === 'PUT') {
         const payload = JSON.parse(await body(req) || '{}');
         const id = decodeURIComponent(rv[1]);

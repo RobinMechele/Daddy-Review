@@ -50,11 +50,16 @@ function chipsFor(it) {
     if (c.waitingOnYou) out.push(chip(`${icon('chat')}${c.waitingOnYou} to answer`, 'accent', 'Comment threads waiting for your reply'));
     else if (c.open) out.push(chip(`${icon('chat')}${c.open} open`, 'muted', 'Open comment threads'));
   }
+  if (it.state === 'other') {
+    const people = it.reviewers.filter((r) => !r.me);
+    if (it.draft) out.push(chip('Draft', 'muted', 'Not ready for review yet'));
+    if (!people.length) out.push(chip('No reviewers', 'accent', 'Nobody is reviewing this yet'));
+    else out.push(chip(`${icon('users')}${people.length}`, 'muted', people.map((r) => r.name).join(', ')));
+  }
   if (it.updated) out.push(chip(`${icon('spark')}Updated`, 'accent', 'New changes since your review'));
   if (it.required) out.push(chip('Required', 'warn', 'You (or your team) are a required reviewer'));
   if (it.team && !it.direct) out.push(chip(`${icon('users')}${esc(it.team)}`, '', 'Assigned to your team'));
   if (it.covered) out.push(chip(it.teamVote > 0 ? 'Teammate approved' : 'Teammate: changes', 'muted', 'A teammate already voted for your team'));
-  if (it.watched && !it.direct && !it.team && !it.mine) out.push(chip(icon('eye'), 'muted icon-only', 'In a repository you watch'));
   if (it.conflicts) out.push(chip(`${icon('alert')}Conflicts`, 'bad', 'Merge conflicts, the author has to fix these first'));
   if (it.autoComplete && it.state !== 'todo') out.push(chip('Auto-complete', 'muted', 'Completes by itself once all policies pass'));
   for (const l of it.labels || []) out.push(chip(esc(l), 'label'));
@@ -104,8 +109,8 @@ function menu(it) {
   return `<div class="menu" role="menu">
     ${v(10)}${v(5)}${v(-5)}${v(-10, 'danger')}
     ${it.myVote !== 0 ? v(0) : ''}
-    <hr>
-    ${it.snoozedUntil ? `<button class="menu-item" data-act="unsnooze" data-key="${esc(it.key)}">${icon('undo')}Unsnooze</button>` : `${sn(1, 'Snooze 1 hour')}${sn(4, 'Snooze 4 hours')}${sn('tomorrow', 'Snooze until tomorrow')}`}
+    ${it.state === 'other' ? '' : `<hr>
+    ${it.snoozedUntil ? `<button class="menu-item" data-act="unsnooze" data-key="${esc(it.key)}">${icon('undo')}Unsnooze</button>` : `${sn(1, 'Snooze 1 hour')}${sn(4, 'Snooze 4 hours')}${sn('tomorrow', 'Snooze until tomorrow')}`}`}
   </div>`;
 }
 
@@ -147,6 +152,7 @@ export function card(it, S) {
   const actions = [
     `<button class="icon-btn" data-act="open" data-key="${k}" title="Open in Azure DevOps (O)">${icon('open')}</button>`,
     it.state === 'todo' ? `<button class="icon-btn ok" data-act="vote" data-vote="10" data-key="${k}" title="Approve (A)">${icon('check')}</button>` : '',
+    it.state === 'other' ? `<button class="icon-btn accent" data-act="pickup" data-key="${k}" title="Add me as reviewer">${icon('plus')}</button>` : '',
     canVote ? `<button class="icon-btn" data-act="menu" data-key="${k}" title="More">${icon('more')}</button>` : '',
   ].join('');
   return `<article class="card ${S.seen && !S.seen.has(it.key) ? 'fresh' : ''} ${S.selectedKey === it.key ? 'selected' : ''} ${S.expanded === it.key ? 'expanded' : ''} ${busy ? 'busy' : ''} st-${it.state}" data-key="${k}">
@@ -242,7 +248,7 @@ export function tabs(S) {
   const c = S.data.inbox.counts;
   const t = (id, label, n, title, hot) => `<button class="tab ${S.tab === id ? 'active' : ''}" data-act="tab" data-tab="${id}" title="${title}">${label}${n ? `<span class="count ${hot ? 'hot' : ''}">${n}</span>` : ''}</button>`;
   return `<nav class="tabs" role="tablist">
-    ${t('todo', 'To review', c.todo, 'Waiting for your review', true)}${t('waiting', 'Waiting', c.waiting, 'You asked for changes')}${t('mine', 'Mine', c.mine, 'Your open PRs')}${t('done', 'Done', c.done, 'You approved these. They leave once completed.')}
+    ${t('todo', 'To review', c.todo, 'Waiting for your review', true)}${t('waiting', 'Waiting', c.waiting, 'You asked for changes')}${t('mine', 'Mine', c.mine, 'Your open PRs')}${t('done', 'Done', c.done, 'You approved these. They leave once completed.')}${t('other', 'Others', c.other, 'Open PRs that don\'t ask for you yet')}
   </nav>`;
 }
 
@@ -285,6 +291,7 @@ export function list(S) {
       waiting: ['No one to wait for', 'PRs where you asked for changes show up here.'],
       mine: ['No open PRs from you', 'Your own PRs and their votes show up here.'],
       done: ['Nothing here yet', 'PRs you approved stay here until they\'re merged.'],
+      other: ['Nothing else open', 'Open PRs that don\'t ask for you show up here.'],
     }[S.tab];
     html = `<div class="empty-state">${mascot(S.tab === 'todo' ? 'happy' : '')}<h3>${empty[0]}</h3><p>${empty[1]}</p></div>${html}`;
   }
@@ -344,8 +351,8 @@ export function offline() {
 
 const sw = (on, attrs) => `<button class="switch ${on ? 'on' : ''}" role="switch" aria-checked="${on}" ${attrs}><i></i></button>`;
 
+/** The settings panel's content (app.js keeps the panel itself, so it doesn't slide in again). */
 export function drawer(S) {
-  if (!S.settingsOpen) return '';
   const d = S.data;
   const st = d.settings;
   const name = d.profile?.name || d.auth.user?.name || 'You';
@@ -354,9 +361,7 @@ export function drawer(S) {
   const hours = (sel, key) => `<select data-change="${key}" aria-label="${key}">${Array.from({ length: 25 }, (_, h) => h)
     .filter((h) => (key === 'workStart' ? h < 24 : h > 0))
     .map((h) => `<option value="${h}" ${sel === h ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select>`;
-  return `<div class="overlay" data-act="close-settings"></div>
-  <aside class="drawer" role="dialog" aria-label="Settings">
-    <header><h2>Settings</h2><button class="icon-btn" data-act="close-settings" title="Close (Esc)">${icon('x')}</button></header>
+  return `<header><h2>Settings</h2><button class="icon-btn" data-act="close-settings" title="Close (Esc)">${icon('x')}</button></header>
     <section class="account">
       ${avatar(name, 'lg', myImage(S))}
       <div class="grow"><b>${esc(name)}</b><small>${esc(email)}</small><span class="pill">${d.auth.method === 'azcli' ? 'Azure CLI' : d.app.demo ? 'Demo account' : 'Microsoft account'}</span></div>
@@ -402,14 +407,13 @@ export function drawer(S) {
       ${S.autostart && !d.app.demo ? `<div class="row"><span class="grow">Start with ${d.app.platform === 'win32' ? 'Windows' : 'login'}<small>Runs quietly in the background</small></span>${sw(S.autostart.enabled, 'data-act="autostart" aria-label="Start at login"')}</div>` : ''}
       <div class="row"><span class="grow">Theme</span><div class="seg">${['auto', 'light', 'dark'].map((t) => `<button class="${S.theme === t ? 'on' : ''}" data-act="theme" data-theme="${t}" title="${t}">${icon(t === 'auto' ? 'monitor' : t === 'light' ? 'sun' : 'moon')}</button>`).join('')}</div></div>
     </section>
-    <footer><span>v${esc(d.app.version)}</span><button class="link" data-act="shortcuts">${icon('keyboard')}Shortcuts</button></footer>
-  </aside>`;
+    <footer><span>v${esc(d.app.version)}</span><button class="link" data-act="shortcuts">${icon('keyboard')}Shortcuts</button></footer>`;
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 function orgStats(c) {
-  return [plural(c.prs, 'open PR'), c.viaTeams ? `${c.viaTeams} via your teams` : null].filter(Boolean).join(' · ');
+  return [`${c.forYou} for you${c.viaTeams ? ` (${c.viaTeams} via teams)` : ''}`, c.mine ? `${c.mine} yours` : null, c.others ? `${c.others} others` : null].filter(Boolean).join(' · ');
 }
 
 function scopeLabel(w) {
@@ -455,7 +459,7 @@ export function repoPicker(S) {
   <div class="modal picker" role="dialog" aria-label="Repositories">
     <header class="picker-head"><h2>${icon('repo')}Repositories</h2><span class="pill">${esc(P.org)}</span>
       <button class="icon-btn sm" data-act="repos-close" title="Close (Esc)">${icon('x')}</button></header>
-    <p class="picker-hint">Every active PR in the ones you pick shows up, also when it doesn't ask for you.</p>
+    <p class="picker-hint">PRs that don't ask for you (<b>Others</b>) then only come from these.</p>
     <label class="search">${icon('search')}<input id="repo-filter" type="search" placeholder="Filter" value="${esc(P.filter)}" autocomplete="off" spellcheck="false" aria-label="Filter repositories"></label>
     <div id="picker-body">${pickerBody(S)}</div>
     <div class="row"><span class="grow">Only these<small>Hide PRs from other repositories. Yours always stay.</small></span>${sw(P.only, `data-act="repos-only" aria-label="Only these repositories" ${n ? '' : 'disabled'}`)}</div>
@@ -488,7 +492,7 @@ function updateRow(app) {
 
 export function shortcuts(S) {
   if (!S.shortcuts) return '';
-  const k = [['/', 'Search'], ['J / K', 'Move'], ['Enter', 'Details'], ['O', 'Open in Azure DevOps'], ['A', 'Approve'], ['W', 'Wait for author'], ['S', 'Snooze 1h'], ['N', 'Review next'], ['R', 'Refresh'], ['1–4', 'Tabs'], ['P', 'Mini window'], ['Esc', 'Close']];
+  const k = [['/', 'Search'], ['J / K', 'Move'], ['Enter', 'Details'], ['O', 'Open in Azure DevOps'], ['A', 'Approve'], ['W', 'Wait for author'], ['S', 'Snooze 1h'], ['N', 'Review next'], ['R', 'Refresh'], ['1–5', 'Tabs'], ['P', 'Mini window'], ['Esc', 'Close']];
   return `<div class="overlay" data-act="shortcuts"></div><div class="modal" role="dialog" aria-label="Keyboard shortcuts"><h2>${icon('keyboard')}Shortcuts</h2>
     <dl>${k.map(([a, b]) => `<dt><kbd>${a}</kbd></dt><dd>${b}</dd>`).join('')}</dl></div>`;
 }

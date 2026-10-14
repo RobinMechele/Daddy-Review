@@ -62,7 +62,7 @@ async function main() {
     await win.waitForSelector('.hero .next-title', { timeout: 20000 });
     assert.equal(await win.textContent('.hero .next-title'), 'Fix rounding error in invoice totals');
     const counts = await win.$$eval('.tab .count', (els) => els.map((e) => e.textContent));
-    assert.deepEqual(counts, ['9', '1', '3', '2']);
+    assert.deepEqual(counts, ['9', '1', '3', '2', '3']);
     step('signs in and loads the review queue');
 
     await win.waitForFunction(() => [...document.querySelectorAll('#list img.av-img')].some((i) => i.complete && i.naturalWidth > 1), null, { timeout: 10000 });
@@ -105,13 +105,35 @@ async function main() {
     await win.click('.picker [data-act="repos-save"]');
     await win.waitForSelector('.picker', { state: 'detached' });
     assert.match(await win.textContent('.drawer [data-act="repos"][data-org="contoso"]'), /Watching mobile-app/);
-    await win.click('.drawer [data-act="close-settings"]');
-    await win.waitForFunction(() => document.querySelector('.tab[data-tab="todo"] .count')?.textContent === '10');
-    await win.fill('#filter', 'offline mode');
-    await win.waitForFunction(() => document.querySelectorAll('#list .cards > .card').length === 1);
-    assert.ok(await win.isVisible('#list .card .chip.icon-only'), 'marked as from a watched repository');
-    await win.fill('#filter', '');
     step('pick repositories to watch');
+
+    // Clicking around in Settings doesn't rebuild the panel (no slide-in again, no jump to the top).
+    await win.evaluate(() => { document.querySelector('aside.drawer').dataset.probe = '1'; });
+    await win.evaluate(() => { document.querySelector('aside.drawer').scrollTop = 200; });
+    const before = await win.evaluate(() => document.querySelector('aside.drawer').scrollTop);
+    await win.click('.drawer [data-setting="quietHours"]');
+    await win.waitForSelector('.drawer [data-setting="quietHours"].on');
+    await win.click('.drawer [data-act="goal"][data-d="1"]');
+    await win.waitForTimeout(400);
+    const panel = await win.evaluate(() => ({ probe: document.querySelector('aside.drawer').dataset.probe, top: document.querySelector('aside.drawer').scrollTop }));
+    assert.equal(panel.probe, '1', 'same panel, not rebuilt');
+    assert.equal(panel.top, before, 'keeps its scroll position');
+    await win.click('.drawer [data-setting="quietHours"]');
+    await win.click('.drawer [data-act="goal"][data-d="-1"]');
+    await win.waitForSelector('.drawer [data-setting="quietHours"]:not(.on)');
+    await win.click('.drawer [data-act="close-settings"]');
+    step('settings stay put while you change them');
+
+    // Others: open PRs that don't ask for you; add yourself as reviewer.
+    await win.click('.tab[data-tab="other"]');
+    await win.waitForSelector('#list .card [data-act="pickup"]');
+    assert.match(await win.textContent('#list .card-title'), /Offline mode for order history/);
+    await win.screenshot({ path: path.join(SHOTS, 'app-others.png') });
+    await win.click('#list .card [data-act="pickup"]');
+    await win.waitForFunction(() => document.querySelector('.tab[data-tab="todo"] .count')?.textContent === '10');
+    assert.equal(await win.$('.tab[data-tab="other"] .count'), null);
+    await win.click('.tab[data-tab="todo"]');
+    step('see PRs that don\'t ask for you, and pick one up');
 
     await win.click('.hero [data-act="vote"]');
     await win.waitForSelector('.toast.in');

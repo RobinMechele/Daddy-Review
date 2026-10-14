@@ -314,6 +314,10 @@ class Ado {
     return { type, data: Buffer.from(await res.arrayBuffer()) };
   }
 
+  removeReviewer(item, reviewerId) {
+    return this.request('DELETE', `${this.prBase(item)}/reviewers/${encodeURIComponent(reviewerId)}?api-version=7.1`, { org: item.org });
+  }
+
   vote(item, reviewerId, vote) {
     return this.request('PUT', `${this.prBase(item)}/reviewers/${encodeURIComponent(reviewerId)}?api-version=7.1`, {
       org: item.org,

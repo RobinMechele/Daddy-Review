@@ -27,9 +27,9 @@ const SCAN_MAX = 1000;
 const SCAN_EVERY_BIG = 10 * 60e3;
 const ID = /^[\w.-]{1,100}$/;
 const ORG_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-// Bumped when the app starts finding more PRs (e.g. nested teams in 1.2): the extra
-// ones are taken in silently once instead of popping up as "new".
-const SCOPE_VERSION = 2;
+// Bumped when the app starts finding more PRs (nested teams in 1.2, all open PRs in
+// 1.3): the extra ones are taken in silently once instead of popping up as "new".
+const SCOPE_VERSION = 3;
 
 /** Accepts "contoso", "https://dev.azure.com/contoso/..." or "https://contoso.visualstudio.com". */
 function parseOrg(input) {
@@ -273,15 +273,16 @@ class Inbox {
     const groups = this.settings.includeTeams ? meta.groups || [] : [];
     const groupIds = new Set(groups.map((g) => g.id));
     const watch = this.watchOf(org);
-    const forYou = (pr) => (pr.createdBy && pr.createdBy.id === meta.myId)
-      || (pr.reviewers || []).some((r) => r && (r.id === meta.myId || groupIds.has(r.id)));
-    const found = [];
+    // Older copies first: the freshest version of a PR wins.
+    const stale = [];
+    const fresh = [];
 
-    // PRs for your teams: look through the active PRs and keep the ones that ask for a team you're in.
-    const scan = groupIds.size && !(watch && watch.only) ? await this.scanTeams(org, meta, groupIds) : null;
-    if (scan && scan.complete) {
-      found.push(...scan.list.filter(forYou));
+    // All open PRs in the organization: the ones for you (also through your teams), and the rest for "Others".
+    const scan = watch && watch.only ? null : await this.scanOrg(org, meta, groupIds);
+    if (scan && !scan.cached && scan.complete) {
+      fresh.push(...scan.list);
     } else {
+      if (scan) stale.push(...scan.list);
       // Asked for you or created by you, plus (big orgs) the teams seen on PRs.
       const queries = [
         { 'searchCriteria.reviewerId': meta.myId },
@@ -293,11 +294,10 @@ class Inbox {
           if (i < 2 || e.code === 'AUTH_REQUIRED') throw e;
           return [];
         }));
-      found.push(...lists.flat());
-      if (scan) found.push(...scan.list.filter(forYou));
+      fresh.push(...lists.flat());
     }
 
-    // Repositories you watch: every active PR in them, for you or not.
+    // Repositories you watch: every open PR in them.
     if (watch) {
       const lists = await mapLimit(watch.scopes, 4, (sc) =>
         this.ado.scopePrs(org, sc).then((r) => r.list).catch((e) => {
@@ -305,53 +305,60 @@ class Inbox {
           this.log.warn(`${org}: could not load ${sc.name || 'a watched project'} (${friendly(e)})`);
           return [];
         }));
-      found.push(...lists.flat());
+      fresh.push(...lists.flat());
     }
 
     const byId = new Map();
-    for (const pr of found) if (pr && pr.pullRequestId && pr.status !== 'completed' && pr.status !== 'abandoned') byId.set(pr.pullRequestId, pr);
+    for (const pr of [...stale, ...fresh]) {
+      if (pr && pr.pullRequestId && pr.status !== 'completed' && pr.status !== 'abandoned') byId.set(pr.pullRequestId, pr);
+    }
     const ctx = { org, myId: meta.myId, groups: new Map(groups.map((g) => [g.id, g.name])), webBase: this.config.WEB_BASE };
     let items = [...byId.values()].map((pr) => logic.toItem(pr, ctx));
     if (watch) {
       for (const it of items) it.watched = watch.has(it);
-      // "Only these repositories": your own PRs always stay.
-      if (watch.only) items = items.filter((it) => it.mine || it.watched);
+      // With repositories picked, "Others" only has PRs from those.
+      // "Only these" hides everything else too; your own PRs always stay.
+      items = items.filter((it) => it.mine || it.watched || (!watch.only && (it.direct || it.team)));
     }
+    const isForYou = (it) => !it.mine && (it.direct || it.team);
     meta.counts = {
       prs: items.length,
-      forYou: items.filter((it) => it.direct || it.team).length,
-      viaTeams: items.filter((it) => it.team && !it.direct && !it.mine).length,
+      forYou: items.filter(isForYou).length,
+      viaTeams: items.filter((it) => isForYou(it) && !it.direct).length,
       mine: items.filter((it) => it.mine).length,
+      others: items.filter((it) => !it.mine && !it.direct && !it.team).length,
       teams: groups.length,
     };
     const summary = JSON.stringify(meta.counts);
     if (summary !== meta.logged) {
       meta.logged = summary;
-      this.log.info(`${org}: ${items.length} active PRs (for you ${meta.counts.forYou}, yours ${meta.counts.mine}, teams ${groups.length}${watch ? `, watching ${watch.scopes.length}` : ''})`);
+      const c = meta.counts;
+      this.log.info(`${org}: ${c.prs} open PRs (for you ${c.forYou}, via teams ${c.viaTeams}, yours ${c.mine}, others ${c.others}, teams ${groups.length}${watch ? `, watching ${watch.scopes.length}` : ''})`);
     }
     return items;
   }
 
   /**
-   * Look through the organization's active PRs for ones that ask for your teams.
-   * Done every refresh, except in very big organizations (every 10 minutes there;
-   * in between, the teams found on PRs are asked for directly).
+   * All open PRs in an organization. Read every refresh, except in very big
+   * organizations: there every 10 minutes, and in between the last list is
+   * reused (and the PRs for you are asked for directly).
    */
-  async scanTeams(org, meta, groupIds) {
-    if (meta.scan && !meta.scan.complete && Date.now() - meta.scan.at < SCAN_EVERY_BIG) return null;
+  async scanOrg(org, meta, groupIds) {
+    const last = meta.scan;
+    if (last && !last.complete && Date.now() - last.at < SCAN_EVERY_BIG) return { list: last.list, complete: false, cached: true };
     let r;
     try {
       r = await this.ado.searchPrs(org, {}, SCAN_MAX);
     } catch (e) {
       if (e.code === 'AUTH_REQUIRED') throw e;
-      this.log.warn(`${org}: could not look for PRs for your teams (${friendly(e)})`);
-      return null;
+      this.log.warn(`${org}: could not list the open PRs (${friendly(e)})`);
+      return last && last.list ? { list: last.list, complete: false, cached: true } : null;
     }
     const hits = new Set();
     for (const pr of r.list) for (const rv of pr.reviewers || []) if (rv && groupIds.has(rv.id)) hits.add(rv.id);
     meta.teamHits = [...hits];
-    if (!r.complete && !(meta.scan && !meta.scan.complete)) this.log.info(`${org}: more than ${SCAN_MAX} active PRs, team PRs are checked every 10 minutes`);
-    meta.scan = { at: Date.now(), complete: r.complete };
+    if (!r.complete && !(last && !last.complete)) this.log.info(`${org}: more than ${SCAN_MAX} open PRs, the full list is read every 10 minutes`);
+    meta.scan = { at: Date.now(), complete: r.complete, list: r.complete ? null : r.list };
     return r;
   }
 
@@ -372,7 +379,8 @@ class Inbox {
   }
 
   async loadSizes(items) {
-    const need = items.filter((i) => !i.mine && !i.draft && i.commit);
+    // Only for PRs that ask for you: "Others" can be hundreds.
+    const need = items.filter((i) => !i.mine && !i.draft && i.commit && (i.direct || i.team));
     await mapLimit(need, 4, async (it) => {
       const ck = `${it.key}@${it.commit}`;
       let files = this.sizeCache.get(ck);
@@ -514,7 +522,7 @@ class Inbox {
     }
     items.sort((a, b) => b.score - a.score || Date.parse(a.created) - Date.parse(b.created));
     const active = items.filter((i) => i.state === 'todo' && !i.snoozedUntil);
-    const counts = { todo: active.length, waiting: 0, done: 0, mine: 0, draft: 0, snoozed: 0 };
+    const counts = { todo: active.length, waiting: 0, done: 0, mine: 0, draft: 0, other: 0, snoozed: 0 };
     for (const i of items) {
       if (i.state === 'todo' && i.snoozedUntil) counts.snoozed++;
       else if (i.state !== 'todo') counts[i.state] = (counts[i.state] || 0) + 1;
@@ -580,6 +588,31 @@ class Inbox {
     }
     this.save();
     return { prevVote };
+  }
+
+  /** Add yourself as a reviewer of a PR that doesn't ask for you (or undo that). */
+  async pickUp(key, { undo = false } = {}) {
+    const it = this.items.get(key);
+    if (!it) throw new HttpError(404, 'That PR is no longer active. Refreshing…');
+    const meta = this.orgMeta.get(it.org);
+    if (!meta) throw new HttpError(409, 'Still loading, try again in a second');
+    if (undo) {
+      const me = it.reviewers.find((r) => r.me);
+      if (me && me.vote !== 0) throw new HttpError(409, 'You already voted on this one');
+      await this.ado.removeReviewer(it, meta.myId);
+      it.reviewers = it.reviewers.filter((r) => !r.me);
+      it.direct = false;
+    } else {
+      await this.ado.vote(it, meta.myId, 0);
+      if (!it.reviewers.some((r) => r.me)) {
+        it.reviewers.push({ id: meta.myId, name: (this.profile && this.profile.name) || 'You', vote: 0, required: false, team: false, declined: false, me: true, image: null });
+      }
+      it.direct = true;
+    }
+    const snap = this.state.snapshot[key] || { myVote: 0, commit: it.commit, votedCommit: null, resetByPush: false };
+    snap.state = logic.classify(it, snap).state;
+    this.state.snapshot[key] = snap;
+    this.save();
   }
 
   snooze(key, until) {

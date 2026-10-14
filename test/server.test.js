@@ -133,7 +133,7 @@ test('loads the review queue from all organizations', async () => {
   assert.equal(body.profile.name, ME.name);
   assert.deepEqual(body.orgs.map((o) => o.name), ['contoso', 'fabrikam-labs']);
   const c = body.inbox.counts;
-  assert.deepEqual({ todo: c.todo, waiting: c.waiting, done: c.done, mine: c.mine, draft: c.draft }, { todo: 9, waiting: 1, done: 2, mine: 3, draft: 1 });
+  assert.deepEqual({ todo: c.todo, waiting: c.waiting, done: c.done, mine: c.mine, draft: c.draft, other: c.other }, { todo: 9, waiting: 1, done: 2, mine: 3, draft: 1, other: 3 });
   assert.equal(body.inbox.next, 'contoso#1201');
   const first = byKey(body, 'contoso#1201');
   assert.deepEqual(first.size, { files: 2, label: 'XS', exts: ['cs'] });
@@ -145,8 +145,8 @@ test('loads the review queue from all organizations', async () => {
   // You're in the Payments team only through an Entra group: still found.
   assert.equal(byKey(body, 'contoso#1208').team, 'Payments Team');
   assert.equal(byKey(body, 'contoso#1208').state, 'todo');
-  // Doesn't ask for you and you don't watch its repository.
-  assert.equal(byKey(body, 'contoso#1209'), undefined);
+  // Doesn't ask for you (yet): under "Others", without a popup.
+  assert.equal(byKey(body, 'contoso#1209').state, 'other');
   assert.equal(byKey(body, 'fabrikam-labs#309').conflicts, true);
   assert.match(first.url, /\/web\/contoso\/Payments\/_git\/payments-api\/pullrequest\/1201$/);
   assert.equal(body.events.length, 0, 'first load is a silent baseline');

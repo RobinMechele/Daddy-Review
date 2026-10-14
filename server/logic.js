@@ -59,7 +59,7 @@ function toItem(pr, ctx) {
     declined: !!(me && me.declined),
     direct: !!me,
     required: !!((me && me.required) || teams.some((t) => t.required)),
-    team: teams.length ? teams[0].name : null,
+    team: teams.length ? teams[0].name || cleanName(ctx.groups.get(teams[0].id)) || 'Your team' : null,
     teamVote: teams.reduce((v, t) => (Math.abs(t.vote) > Math.abs(v) ? t.vote : v), 0),
     mine: !!ctx.myId && author.id === ctx.myId,
     url: webUrl(ctx.webBase, ctx.org, project.name || '', repo.name || '', pr.pullRequestId),
@@ -73,12 +73,14 @@ function toItem(pr, ctx) {
  *  done    - you approved it (it leaves once it's completed)
  *  mine    - you created it
  *  draft   - not ready yet
+ *  other   - open, but doesn't ask for you (or your team) yet
  * Only your own vote moves a PR out of todo: a teammate voting for your team
  * doesn't mean you reviewed it (it just ranks lower, marked "covered").
  */
 function classify(item, snap) {
   if (item.mine) return { state: 'mine', updated: false };
   if (item.declined) return { state: 'hidden', updated: false };
+  if (!item.direct && !item.team) return { state: 'other', updated: false };
   if (item.draft) return { state: 'draft', updated: false };
   const changedSinceVote = item.myVote !== 0 && !!(snap && snap.votedCommit) && !!item.commit && snap.votedCommit !== item.commit;
   if (item.myVote === 0 || changedSinceVote) {
@@ -221,9 +223,11 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
     const c = classify(it, s);
     s.state = c.state;
     if (!p) {
-      if (fresh && c.state === 'todo') events.push(event('new', it));
+      // New PRs that don't ask for you only pop up in repositories you watch.
+      if (fresh && (c.state === 'todo' || (c.state === 'other' && it.watched && !it.draft))) events.push(event('new', it));
     } else {
       if (c.state === 'todo' && p.state === 'draft') events.push(event('new', it, { title: 'Ready for review' }));
+      else if (fresh && c.state === 'todo' && p.state === 'other') events.push(event('new', it));
       else if (c.state === 'todo' && c.updated && p.state !== 'todo') events.push(event('updated', it));
       if (it.mine && it.comments && typeof p.othersComments === 'number' && it.comments.fromOthers > p.othersComments) {
         const who = it.comments.lastBy || 'Someone';
