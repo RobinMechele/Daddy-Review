@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
   tenant: 'organizations',
   quietHours: false,
   hotkey: true,
+  reviewInApp: true,
   // Per organization: repositories/projects to watch ({ pick: [...], only }).
   repos: {},
 };
@@ -644,7 +645,7 @@ class Inbox {
   updateSettings(patch = {}) {
     const s = this.settings;
     const bool = (k) => { if (typeof patch[k] === 'boolean') s[k] = patch[k]; };
-    ['includeTeams', 'desktopPopups', 'nudges', 'useAzCli', 'quietHours', 'hotkey'].forEach(bool);
+    ['includeTeams', 'desktopPopups', 'nudges', 'useAzCli', 'quietHours', 'hotkey', 'reviewInApp'].forEach(bool);
     const int = (k, lo, hi) => {
       const v = Number(patch[k]);
       if (patch[k] !== undefined && Number.isInteger(v) && v >= lo && v <= hi) s[k] = v;

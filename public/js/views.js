@@ -149,7 +149,9 @@ export function card(it, S) {
   const who = it.state === 'mine' ? reviewersMini(it) : `${avatar(it.author.name, 'xs', it.author.image)}<span class="who">${esc(it.author.name)}</span>`;
   const meta = [who, `<span class="repo">${esc(it.repo)}</span>`, `<span title="${esc(new Date(it.created).toLocaleString())}">${fmtAge(it.ageH)}</span>`];
   const canVote = it.state !== 'mine';
+  const inApp = S.data.settings.reviewInApp !== false;
   const actions = [
+    inApp ? `<button class="icon-btn" data-act="review-app" data-key="${k}" title="${it.state === 'mine' ? 'Open here' : 'Review here'}">${icon('eye')}</button>` : '',
     `<button class="icon-btn" data-act="open" data-key="${k}" title="Open in Azure DevOps (O)">${icon('open')}</button>`,
     it.state === 'todo' ? `<button class="icon-btn ok" data-act="vote" data-vote="10" data-key="${k}" title="Approve (A)">${icon('check')}</button>` : '',
     it.state === 'other' ? `<button class="icon-btn accent" data-act="pickup" data-key="${k}" title="Add me as reviewer">${icon('plus')}</button>` : '',
@@ -403,6 +405,7 @@ export function drawer(S) {
     <section>
       <h3>App</h3>
       ${d.app.hotkey ? `<div class="row"><span class="grow">Shortcut <kbd>${esc(d.app.hotkey.label)}</kbd><small>${d.app.hotkey.failed ? 'Taken by another app' : 'Show or hide Daddy Review from anywhere'}</small></span>${sw(st.hotkey, 'data-act="toggle" data-setting="hotkey" aria-label="Global shortcut"')}</div>` : ''}
+      <div class="row"><span class="grow">Review inside the app<small>${st.reviewInApp === false ? 'Review now opens Azure DevOps in your browser' : 'Files, comments and votes right here'}</small></span>${sw(st.reviewInApp !== false, 'data-act="toggle" data-setting="reviewInApp" aria-label="Review inside the app"')}</div>
       ${updateRow(d.app)}
       ${S.autostart && !d.app.demo ? `<div class="row"><span class="grow">Start with ${d.app.platform === 'win32' ? 'Windows' : 'login'}<small>Runs quietly in the background</small></span>${sw(S.autostart.enabled, 'data-act="autostart" aria-label="Start at login"')}</div>` : ''}
       <div class="row"><span class="grow">Theme</span><div class="seg">${['auto', 'light', 'dark'].map((t) => `<button class="${S.theme === t ? 'on' : ''}" data-act="theme" data-theme="${t}" title="${t}">${icon(t === 'auto' ? 'monitor' : t === 'light' ? 'sun' : 'moon')}</button>`).join('')}</div></div>
@@ -492,7 +495,7 @@ function updateRow(app) {
 
 export function shortcuts(S) {
   if (!S.shortcuts) return '';
-  const k = [['/', 'Search'], ['J / K', 'Move'], ['Enter', 'Details'], ['O', 'Open in Azure DevOps'], ['A', 'Approve'], ['W', 'Wait for author'], ['S', 'Snooze 1h'], ['N', 'Review next'], ['R', 'Refresh'], ['1–5', 'Tabs'], ['P', 'Mini window'], ['Esc', 'Close']];
+  const k = [['/', 'Search'], ['J / K', 'Move'], ['Enter', 'Details'], ['O', 'Open in Azure DevOps'], ['A', 'Approve'], ['W', 'Wait for author'], ['S', 'Snooze 1h'], ['N', 'Review next'], ['R', 'Refresh'], ['1–5', 'Tabs'], ['P', 'Mini window'], ['Esc', 'Close'], ['N / P', 'Next / previous file (in a review)'], ['V', 'Mark file viewed (in a review)'], ['Ctrl+Enter', 'Send comment']];
   return `<div class="overlay" data-act="shortcuts"></div><div class="modal" role="dialog" aria-label="Keyboard shortcuts"><h2>${icon('keyboard')}Shortcuts</h2>
     <dl>${k.map(([a, b]) => `<dt><kbd>${a}</kbd></dt><dd>${b}</dd>`).join('')}</dl></div>`;
 }

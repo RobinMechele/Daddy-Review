@@ -16,9 +16,14 @@ export function toast(message, { kind = 'info', action = null, ms = 4500 } = {})
     });
   }
   host.append(el);
+  // At most three at a time: the oldest make room.
+  const live = [...host.querySelectorAll('.toast:not(.out)')];
+  for (const old of live.slice(0, Math.max(0, live.length - 3))) old.dismiss();
+  el.dismiss = dismiss;
   requestAnimationFrame(() => el.classList.add('in'));
   const timer = setTimeout(dismiss, ms);
   function dismiss() {
+    el.classList.add('out');
     clearTimeout(timer);
     el.classList.remove('in');
     setTimeout(() => el.remove(), 250);

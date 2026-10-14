@@ -54,6 +54,73 @@ function fakeJwt(extra = {}) {
   return `${b64url(JSON.stringify({ alg: 'none', typ: 'JWT' }))}.${b64url(JSON.stringify(payload))}.sig`;
 }
 
+// ---- file contents, so PRs can be reviewed in the app -------------------------------
+
+function rng(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6d2b79f5) >>> 0;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const WORDS = ['total', 'amount', 'invoice', 'retry', 'cache', 'token', 'order', 'payment', 'currency', 'rate', 'refund', 'customer'];
+const cap = (w) => w[0].toUpperCase() + w.slice(1);
+
+/** Plausible looking source for a path (the "before" version). */
+function sourceFor(path, seed) {
+  const r = rng(seed);
+  const w = () => WORDS[Math.floor(r() * WORDS.length)];
+  const ext = ((/\.([a-z0-9]+)$/i.exec(path) || [])[1] || '').toLowerCase();
+  const name = path.split('/').pop().replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9]/g, '') || 'Item';
+  const lines = [];
+  if (ext === 'cs') {
+    lines.push('using System;', 'using System.Collections.Generic;', 'using System.Linq;', '', `namespace Contoso.${name}`, '{', `    public class ${name}`, '    {');
+    for (let m = 0; m < 6; m++) {
+      const a = w();
+      const b = w();
+      lines.push(`        public decimal ${cap(a)}${cap(b)}(IReadOnlyList<decimal> ${a}s)`, '        {', `            if (${a}s.Count == 0) return 0m;`, `            var ${b} = ${a}s.Sum();`, `            return Math.Round(${b}, 2);`, '        }', '');
+    }
+    lines.pop();
+    lines.push('    }', '}');
+  } else if (['ts', 'tsx', 'js'].includes(ext)) {
+    lines.push("import { useState } from 'react';", '');
+    for (let m = 0; m < 6; m++) {
+      const a = w();
+      lines.push(`export function ${a}${cap(w())}(${a}: number): string {`, `  const value = Math.round(${a} * 100) / 100;`, '  return value.toFixed(2);', '}', '');
+    }
+  } else if (ext === 'py') {
+    lines.push('import pyarrow as pa', '');
+    for (let m = 0; m < 6; m++) {
+      const a = w();
+      lines.push(`def ${a}_${w()}(rows):`, `    # The ${a} of each row.`, `    return [row["${a}"] for row in rows]`, '', '');
+    }
+  } else {
+    lines.push(`# ${name}`, '');
+    for (let m = 0; m < 24; m++) lines.push(`${w()}_${w()}: ${Math.floor(r() * 500)}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/** The "after" version: a few lines changed, added and removed. */
+function edit(text, seed) {
+  const r = rng(seed);
+  const lines = text.split('\n');
+  lines.pop();
+  const at = (from) => from + Math.floor(r() * Math.max(1, lines.length - from - 2));
+  const i = at(4);
+  lines[i] = `${lines[i]} // ${WORDS[Math.floor(r() * WORDS.length)]} rounding`;
+  const j = at(8);
+  lines.splice(j, 0, '        // Round once, at the very end.', '        var rounded = Math.Round(total, 2, MidpointRounding.ToEven);');
+  const k = at(14);
+  lines.splice(k, 1);
+  return `${lines.join('\n')}\n`;
+}
+
+const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
+
 function filesFor(repo, n) {
   const pool = REPOS[repo].files;
   return Array.from({ length: n }, (_, i) => {
@@ -77,7 +144,10 @@ function seed(now = Date.now()) {
   };
   const P = PEOPLE;
   add('contoso', 1201, 'payments-api', P.priya, 3, 2, 'Fix rounding error in invoice totals', [R(P.me, 0, { isRequired: true }), R(P.jonas)],
-    { description: 'Totals were rounded per line instead of per invoice. Now uses banker\'s rounding once at the end.', labels: ['bug'], threads: [{ by: P.jonas, text: 'Do we need a migration for already issued invoices?', status: 'active' }] });
+    { description: 'Totals were rounded per line instead of per invoice. Now uses banker\'s rounding once at the end.', labels: ['bug'], threads: [
+      { by: P.jonas, text: 'Do we need a migration for already issued invoices?', status: 'active' },
+      { by: P.jonas, text: 'Could this overflow for **very** large invoices? Maybe use `checked` here.', status: 'active', file: 'src/Payments.Domain/Invoice.cs', line: 12 },
+    ] });
   add('contoso', 1198, 'payments-api', P.jonas, 26, 7, 'Add retry policy to payment webhook handler', [R(P.me, 0, { isRequired: true }), R(P.priya, 10)],
     { description: 'Exponential backoff with jitter for the PSP webhook. Max 5 attempts, dead-letter after that.' });
   add('contoso', 1187, 'checkout-web', P.mia, 74, 18, 'Checkout: Apple Pay button behind feature flag', [R(P.me), R(P.emma, 5)],
@@ -125,7 +195,7 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
   const codes = new Map();
   const accessTokens = new Set();
   const refreshTokens = new Set();
-  const log = { votes: [], tokenRequests: [] };
+  const log = { votes: [], tokenRequests: [], threads: [] };
   let port = 0;
   let nextId = 1300;
   let simIndex = 0;
@@ -170,6 +240,22 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
   const avatarUrl = (org, id) => `${base()}/ado/${encodeURIComponent(org)}/_apis/GraphProfile/MemberAvatars/${encodeURIComponent(id)}`;
 
   const findPr = (org, id) => prs.find((p) => p.org === org && p.pullRequestId === Number(id));
+
+  // Blob contents by id (like Git's object ids).
+  const blobs = new Map();
+  const store = (text) => {
+    const id = sha1(text);
+    blobs.set(id, text);
+    return id;
+  };
+  /** Both versions of a file in a PR (the latest push). */
+  const versions = (pr, file, i) => {
+    const added = i % 5 === 4;
+    const before = sourceFor(file, pr.pullRequestId * 97 + i);
+    const after = edit(before, pr.pullRequestId * 31 + pr.iterations * 7 + i);
+    return { added, oldId: added ? null : store(before), newId: store(after) };
+  };
+  const STATUS_NAMES = { 1: 'active', 2: 'fixed', 3: 'wontFix', 4: 'closed', 5: 'byDesign', 6: 'pending' };
 
   const control = {
     pushCommit(org, id) {
@@ -355,14 +441,62 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
       return send(res, 200, { count: page.length, value: page.map(toApi) });
     }
 
+    m = /^\/ado\/[^/]+\/[^/]+\/_apis\/git\/repositories\/[^/]+\/blobs\/([0-9a-f]{40})$/.exec(p);
+    if (m) {
+      if (!blobs.has(m[1])) return send(res, 404, { message: 'blob not found' });
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      return res.end(blobs.get(m[1]));
+    }
+
     m = /^\/ado\/([^/]+)\/[^/]+\/_apis\/git\/repositories\/[^/]+\/pullRequests\/(\d+)(\/.*)?$/.exec(p);
     if (m) {
       const pr = findPr(decodeURIComponent(m[1]), m[2]);
       if (!pr) return send(res, 404, { message: 'TF401180: pull request not found' });
       const rest = m[3] || '';
-      if (rest === '/iterations') return send(res, 200, { count: pr.iterations, value: Array.from({ length: pr.iterations }, (_, i) => ({ id: i + 1 })) });
+      if (rest === '' && req.method === 'GET') return send(res, 200, toApi(pr));
+      if (rest === '/iterations') {
+        return send(res, 200, {
+          count: pr.iterations,
+          value: Array.from({ length: pr.iterations }, (_, i) => ({ id: i + 1, sourceRefCommit: { commitId: pr.commit }, commonRefCommit: { commitId: `base${pr.pullRequestId}` } })),
+        });
+      }
       if (/^\/iterations\/\d+\/changes$/.test(rest)) {
-        return send(res, 200, { changeEntries: pr.files.map((f, i) => ({ changeTrackingId: i + 1, changeType: i % 5 === 4 ? 'add' : 'edit', item: { path: `/${f}` } })) });
+        return send(res, 200, {
+          changeEntries: pr.files.map((f, i) => {
+            const v = versions(pr, f, i);
+            return { changeTrackingId: i + 1, changeType: v.added ? 'add' : 'edit', item: { path: `/${f}`, gitObjectType: 'blob', objectId: v.newId, originalObjectId: v.oldId || undefined } };
+          }),
+        });
+      }
+      if (rest === '/threads' && req.method === 'POST') {
+        const t = JSON.parse(await body(req) || '{}');
+        log.threads.push(t);
+        const ctx = t.threadContext || {};
+        const pos = ctx.rightFileStart || ctx.leftFileStart;
+        pr.threads.push({
+          by: PEOPLE.me,
+          at: Date.now(),
+          text: t.comments[0].content,
+          status: STATUS_NAMES[t.status] || t.status || 'active',
+          file: ctx.filePath ? ctx.filePath.replace(/^\//, '') : undefined,
+          line: pos ? pos.line : undefined,
+          side: ctx.leftFileStart ? 'left' : 'right',
+        });
+        return send(res, 200, { id: pr.threads.length + 1 });
+      }
+      const th = /^\/threads\/(\d+)(\/comments)?$/.exec(rest);
+      if (th) {
+        const t = pr.threads[Number(th[1]) - 2];
+        if (!t) return send(res, 404, { message: 'thread not found' });
+        const payload = JSON.parse(await body(req) || '{}');
+        if (th[2] && req.method === 'POST') {
+          t.replies = [...(t.replies || []), { by: PEOPLE.me, text: payload.content, at: Date.now() }];
+          return send(res, 200, { id: t.replies.length + 1 });
+        }
+        if (!th[2] && req.method === 'PATCH') {
+          t.status = STATUS_NAMES[payload.status] || payload.status;
+          return send(res, 200, { id: Number(th[1]), status: t.status });
+        }
       }
       if (rest === '/threads') {
         return send(res, 200, {
@@ -372,12 +506,16 @@ function createFakeAdo({ autoLogin = true, simulate = false, seedNow } = {}) {
               id: i + 2,
               status: t.status,
               isDeleted: false,
-              comments: [{ by: t.by, text: t.text }, ...(t.replies || [])].map((c, j) => ({
+              threadContext: t.file ? {
+                filePath: `/${t.file}`,
+                ...(t.line ? { [t.side === 'left' ? 'leftFileStart' : 'rightFileStart']: { line: t.line, offset: 1 }, [t.side === 'left' ? 'leftFileEnd' : 'rightFileEnd']: { line: t.line, offset: 2 } } : {}),
+              } : null,
+              comments: [{ by: t.by, text: t.text, at: t.at }, ...(t.replies || [])].map((c, j) => ({
                 id: j + 1,
                 commentType: 'text',
                 content: c.text,
                 author: { id: c.by.id, displayName: c.by.displayName },
-                publishedDate: new Date(Date.now() - (60 - i * 5 - j) * 60000).toISOString(),
+                publishedDate: new Date(c.at || Date.now() - (60 - i * 5 - j) * 60000).toISOString(),
               })),
             })),
           ],

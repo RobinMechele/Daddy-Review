@@ -222,6 +222,7 @@ function registerIpc() {
   });
   ipcMain.handle('daddy:mini', (e) => (trusted(e) ? openMini() : false));
   ipcMain.on('daddy:show-main', (e) => trusted(e) && showMain());
+  ipcMain.on('daddy:open-review', (e, key) => trusted(e) && typeof key === 'string' && reviewInMain(key));
   ipcMain.on('daddy:badge', (e, msg) => trusted(e) && msg && setBadge(msg.count, msg.png));
   ipcMain.on('daddy:titlebar', (e, colors) => trusted(e) && colors && applyTitleBar(colors));
 }
@@ -316,6 +317,14 @@ function showMain() {
   if (mainWin.isMinimized()) mainWin.restore();
   mainWin.show();
   mainWin.focus();
+}
+
+/** Show the main window with a PR open on the review screen. */
+function reviewInMain(key) {
+  showMain();
+  const send = () => mainWin && !mainWin.isDestroyed() && mainWin.webContents.send('daddy:review', { key });
+  if (mainWin.webContents.isLoading()) mainWin.webContents.once('did-finish-load', send);
+  else send();
 }
 
 function openMini() {
@@ -428,7 +437,9 @@ function showNotification({ title, body, url, key }) {
   const forget = () => liveNotifications.delete(n);
   n.on('click', () => {
     forget();
-    if (key && url && /^https?:\/\//i.test(url)) {
+    if (key && core.inbox.settings.reviewInApp !== false && core.inbox.items.has(key)) {
+      reviewInMain(key);
+    } else if (key && url && /^https?:\/\//i.test(url)) {
       shell.openExternal(url);
       broadcast('daddy:opened', { key });
     } else {

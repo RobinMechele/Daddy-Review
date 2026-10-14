@@ -26,7 +26,7 @@ Then click **Sign in with Microsoft**: your browser opens, you pick your work ac
 |---|---|
 | **Next up** | Ranks your queue: required reviews, quick wins (few files), PRs updated since your vote and long-waiting ones go first. Shows size (XS–XL) and an estimated review time. |
 | **One-click votes** | Approve, approve with suggestions, wait for author, reject or snooze right from the list. Every vote has *Undo*. |
-| **Review flow** | *Review now* opens the PR in your browser. When you come back, the assistant asks how it went, records your vote and hands you the next one. |
+| **Review in the app** | *Review now* opens the PR right in Daddy Review: every changed file with its diff, comments shown on their lines, comment on any line (+), reply, resolve, mark files as viewed and vote. *Next PR* takes you to the next one. Prefer Azure DevOps? Switch off *Review inside the app* in Settings: then it opens in your browser and the assistant asks how it went when you're back. |
 | **Popups** | Windows notifications for new review requests, drafts that are ready for review, new pushes after your review, votes and comments on *your* PRs, a nudge when PRs wait too long and a Friday recap. Click one to open the PR. Optionally only during work hours. |
 | **Comments on your PRs** | Your own PRs show which comment threads are waiting for your answer. |
 | **Search** | Press `/` and type: title, repo, author, branch or label. |
@@ -44,6 +44,7 @@ Then click **Sign in with Microsoft**: your browser opens, you pick your work ac
 </p>
 
 **Keyboard:** `/` search · `J`/`K` move · `Enter` details · `O` open · `A` approve · `W` wait · `S` snooze · `N` next · `R` refresh · `P` mini window · `?` all shortcuts.
+In a review: `N`/`P` next/previous file · `V` viewed · `A` approve · `O` open in Azure DevOps · `Ctrl+Enter` send comment · `Esc` back.
 
 ## Sign-in without a PAT
 
@@ -82,6 +83,7 @@ Every push builds the Windows, macOS and Linux installers in GitHub Actions, ins
 electron/  main.js (window, tray, notifications, sign-in, autostart, shortcut) · updater.js · preload.js (the UI's only bridge)
 server/    core.js (engine API) · auth.js (Microsoft / Azure CLI) · loopback.js (desktop sign-in)
            ado.js (Azure DevOps REST) · inbox.js (polling, events, stats) · logic.js (ranking, diffing)
+           review.js (reviewing in the app) · diff.js (line diffs)
            index.js (browser dev mode, used by the tests)
 public/    the UI: index.html · styles.css · js/
 demo/      fake Azure DevOps + Microsoft sign-in for the demo and the tests

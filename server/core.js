@@ -4,6 +4,7 @@ const { loadConfig } = require('./config');
 const { Auth } = require('./auth');
 const { Ado } = require('./ado');
 const { Inbox } = require('./inbox');
+const { Review } = require('./review');
 const { createLogger, HttpError } = require('./util');
 
 /**
@@ -28,6 +29,7 @@ function createCore(overrides = {}) {
   const auth = new Auth({ config, log, getSettings: () => inbox.settings, fetch: overrides.fetch, runAz: overrides.runAz });
   const ado = new Ado({ auth, config, log, fetch: overrides.fetch });
   inbox = new Inbox({ config, ado, auth, log, notify: overrides.notify || (() => {}), suppressToast: overrides.suppressToast });
+  const review = new Review({ ado, inbox, log });
 
   function state() {
     const a = auth.status();
@@ -117,6 +119,11 @@ function createCore(overrides = {}) {
     },
     'GET /api/pr': ({ query }) => inbox.details(String(query.key)),
     'GET /api/repos': ({ query }) => inbox.repoChoices(String(query.org || '')),
+    // Reviewing inside the app.
+    'GET /api/review': ({ query }) => review.open(String(query.key)),
+    'GET /api/review/diff': ({ query }) => review.diff(String(query.key), String(query.path || '')),
+    'POST /api/review/comment': ({ body }) => review.comment(String(body.key), body),
+    'POST /api/review/status': ({ body }) => review.setStatus(String(body.key), body.threadId, String(body.status)),
     'GET /api/autostart': () => (host.autostart ? host.autostart.status() : { supported: false, enabled: false }),
     'POST /api/autostart': ({ body }) => {
       if (!host.autostart) throw new HttpError(400, 'Not available here');
@@ -174,6 +181,7 @@ function createCore(overrides = {}) {
     auth,
     ado,
     inbox,
+    review,
     state,
     call,
     image,

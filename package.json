@@ -1,6 +1,6 @@
 {
   "name": "daddy-review",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Your Azure DevOps pull request review sidekick. A desktop app with popups, no PAT needed.",
   "private": true,
   "license": "MIT",

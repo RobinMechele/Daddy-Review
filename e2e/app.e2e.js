@@ -140,12 +140,63 @@ async function main() {
     await win.waitForFunction(() => document.querySelector('.hero .goal-num')?.textContent.trim().startsWith('1'));
     step('approves from the app (goal 1/5)');
 
+    // The whole review inside the app.
     await win.click('.hero [data-act="review"]');
-    await win.waitForFunction(() => true);
+    await win.waitForSelector('.rv-overview');
+    assert.equal(await app.evaluate(() => global.__opened.length), 0, 'stays in the app');
+    const reviewTitle = await win.textContent('.rv-title h1');
+    await win.click('.rv-file .rv-item >> nth=0');
+    await win.waitForSelector('.diff .dl.t-add');
+    await win.hover('.diff .dl.t-add >> nth=0');
+    await win.click('.diff .dl.t-add .add-c >> nth=0');
+    await win.fill('.composer textarea', 'Can we **name** this better?');
+    await win.keyboard.press('Control+Enter');
+    await win.waitForFunction(() => [...document.querySelectorAll('.diff .thread .md b')].some((b) => b.textContent === 'name'));
+    step('review in the app: diff, comment on a line');
+
+    await win.fill('.diff .thread textarea', 'Or keep it, fine either way.');
+    await win.click('.diff .thread [data-act="rv-reply"]');
+    await win.waitForFunction(() => document.querySelectorAll('.diff .thread .cm').length === 2);
+    await win.click('.diff .thread [data-act="rv-status"]');
+    await win.waitForSelector('.diff .thread.resolved');
+    await win.check('.rv-filebar [data-viewed]');
+    await win.waitForSelector('.rv-file.viewed');
+    await win.screenshot({ path: path.join(SHOTS, 'app-review.png') });
+    step('reply, resolve and mark files as viewed');
+
+    await win.click('.rv-head [data-act="rv-vote"][data-vote="10"]');
+    await win.waitForSelector('.rv-head .vote-pill.on[data-vote="10"]');
+    await win.waitForSelector('.rv-head [data-act="rv-next-pr"]');
+    await win.click('.rv-head [data-act="rv-open"]');
     const opened = await app.evaluate(() => global.__opened);
     assert.equal(opened.length, 1);
     assert.match(opened[0], /\/pullrequest\/\d+$/);
-    step('"Review now" opens the PR in your browser');
+    await win.keyboard.press('Escape');
+    await win.waitForSelector('.hero');
+    assert.notEqual(await win.textContent('.hero .next-title'), reviewTitle);
+    step('approve from the review, "Next PR", open in Azure DevOps');
+
+    // Comments others left on lines show on those lines.
+    await win.click('.tab[data-tab="done"]');
+    await win.click('#list .card[data-key="contoso#1201"] [data-act="review-app"]');
+    await win.waitForSelector('.rv-overview .th-file');
+    await win.click('.rv-overview .th-file');
+    await win.waitForSelector('.diff .thread');
+    assert.match(await win.textContent('.diff .thread'), /overflow/);
+    await win.click('.rv-head [data-act="rv-back"]');
+    await win.click('.tab[data-tab="todo"]');
+    step('comments on lines show on those lines');
+
+    // The goal ring's check mark stands upright.
+    await win.click('.top-actions [data-act="settings"]');
+    for (let i = 0; i < 3; i++) await win.click('.drawer [data-act="goal"][data-d="-1"]');
+    await win.click('.drawer [data-act="close-settings"]');
+    await win.waitForSelector('.hero .goal-done .goal-num .ic');
+    assert.equal(await win.$eval('.hero .goal-num .ic', (el) => getComputedStyle(el).transform), 'none');
+    await win.click('.top-actions [data-act="settings"]');
+    for (let i = 0; i < 3; i++) await win.click('.drawer [data-act="goal"][data-d="1"]');
+    await win.click('.drawer [data-act="close-settings"]');
+    step('goal reached: the check mark is upright');
 
     const [mini] = await Promise.all([app.waitForEvent('window'), win.click('.top-actions [data-act="pip"]')]);
     await mini.waitForSelector('.mini-next, .mini-session');
@@ -154,6 +205,13 @@ async function main() {
     assert.ok(windows.some((w) => w.url.includes('mini=1') && w.top), 'mini window stays on top');
     await mini.screenshot({ path: path.join(SHOTS, 'app-mini.png') });
     step('mini window opens, always on top');
+
+    // "Review" in the mini window opens the review in the main window.
+    await mini.click('.mini-next [data-act="review"]');
+    await win.waitForSelector('.rv-head');
+    await win.keyboard.press('Escape');
+    await win.waitForSelector('.hero');
+    step('the mini window opens reviews in the main window');
 
     await win.bringToFront();
     await win.waitForTimeout(500);

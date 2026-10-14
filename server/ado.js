@@ -37,7 +37,8 @@ class Ado {
     return `${this.config.ADO_BASE}/${encodeURIComponent(org)}`;
   }
 
-  async request(method, url, { org, body, retry = {} } = {}) {
+  /** One call to Azure DevOps. `raw: true` returns the body as a Buffer (file contents). */
+  async request(method, url, { org, body, raw = false, retry = {} } = {}) {
     const tenant = org ? this.orgTenant.get(org) : undefined;
     const token = await this.auth.getToken(tenant);
     let res;
@@ -46,7 +47,7 @@ class Ado {
         method,
         headers: {
           Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
+          Accept: raw ? '*/*' : 'application/json',
           ...(body ? { 'Content-Type': 'application/json' } : {}),
           'X-TFS-FedAuthRedirect': 'Suppress',
         },
@@ -57,23 +58,26 @@ class Ado {
     } catch (e) {
       throw new AdoError(0, `Can't reach Azure DevOps (${(e.cause && e.cause.code) || e.message})`);
     }
-    const text = await res.text();
-    const isJson = (res.headers.get('content-type') || '').includes('json');
+    const buf = Buffer.from(await res.arrayBuffer());
+    const text = buf.toString('utf8');
+    const type = res.headers.get('content-type') || '';
+    const isJson = type.includes('json');
 
     if (res.status === 429 && !retry.throttle) {
       const wait = Math.min(10, Number(res.headers.get('retry-after')) || 3);
       await new Promise((r) => setTimeout(r, wait * 1000));
-      return this.request(method, url, { org, body, retry: { ...retry, throttle: true } });
+      return this.request(method, url, { org, body, raw, retry: { ...retry, throttle: true } });
     }
 
     // Azure DevOps answers bad/foreign tokens with 401, 203 + HTML or a redirect to sign-in.
-    const authFailed = res.status === 401 || res.status === 203 || (res.status >= 300 && res.status < 400) || (res.ok && text && !isJson);
+    const unexpected = raw ? type.includes('text/html') : !isJson;
+    const authFailed = res.status === 401 || res.status === 203 || (res.status >= 300 && res.status < 400) || (res.ok && buf.length && unexpected);
     if (authFailed) {
       if (org && !retry.tenant) {
         const t = await this.discoverTenant(org);
         if (t && t !== tenant) {
           this.orgTenant.set(org, t);
-          return this.request(method, url, { org, body, retry: { ...retry, tenant: true } });
+          return this.request(method, url, { org, body, raw, retry: { ...retry, tenant: true } });
         }
       }
       throw new AdoError(401, org ? `No access to "${org}" with this account` : 'Azure DevOps refused the sign-in');
@@ -81,7 +85,7 @@ class Ado {
 
     if (res.status === 400 && !retry.preview && /preview/i.test(text) && /api-version=\d+\.\d+(&|$)/.test(url)) {
       const next = url.replace(/api-version=(\d+\.\d+)(&|$)/, 'api-version=$1-preview$2');
-      return this.request(method, next, { org, body, retry: { ...retry, preview: true } });
+      return this.request(method, next, { org, body, raw, retry: { ...retry, preview: true } });
     }
 
     if (!res.ok) {
@@ -89,6 +93,7 @@ class Ado {
       try { msg = JSON.parse(text).message; } catch { /* not json */ }
       throw new AdoError(res.status, msg || `Azure DevOps answered HTTP ${res.status}`);
     }
+    if (raw) return buf;
     if (!text) return null;
     try {
       return JSON.parse(text);
@@ -270,14 +275,91 @@ class Ado {
 
   /** Files changed in the latest iteration (compared to the merge base). */
   async changedFiles(item) {
-    const its = await this.get(`${this.prBase(item)}/iterations?api-version=7.1`, item.org);
-    const list = (its && its.value) || [];
-    if (!list.length) return [];
-    const last = Math.max(...list.map((i) => i.id));
-    const ch = await this.get(`${this.prBase(item)}/iterations/${last}/changes?${qs({ $top: 2000, 'api-version': '7.1' })}`, item.org);
-    return ((ch && ch.changeEntries) || [])
-      .filter((c) => c.item && c.item.path && !c.item.isFolder)
-      .map((c) => ({ path: c.item.path, type: String(c.changeType || 'edit') }));
+    const its = await this.iterations(item);
+    if (!its.length) return [];
+    return (await this.changes(item, its[its.length - 1].id)).map((c) => ({ path: c.path, type: c.type }));
+  }
+
+  /** One PR with everything (the list only has a shortened description). */
+  pullRequest(item) {
+    return this.get(`${this.prBase(item)}?api-version=7.1`, item.org);
+  }
+
+  /** The PR's iterations (pushes), oldest first. */
+  async iterations(item) {
+    const r = await this.get(`${this.prBase(item)}/iterations?api-version=7.1`, item.org);
+    return ((r && r.value) || []).filter((i) => i && i.id).sort((a, b) => a.id - b.id).map((i) => ({
+      id: i.id,
+      source: (i.sourceRefCommit && i.sourceRefCommit.commitId) || null,
+      target: (i.targetRefCommit && i.targetRefCommit.commitId) || null,
+      base: (i.commonRefCommit && i.commonRefCommit.commitId) || null,
+    }));
+  }
+
+  /** Files changed in an iteration compared to the merge base, with the blobs on both sides. */
+  async changes(item, iterationId) {
+    const out = [];
+    let skip = 0;
+    for (let page = 0; page < 5; page++) {
+      const r = await this.get(`${this.prBase(item)}/iterations/${iterationId}/changes?${qs({ $top: 2000, $skip: skip || undefined, $compareTo: 0, 'api-version': '7.1' })}`, item.org);
+      for (const c of (r && r.changeEntries) || []) {
+        if (!c.item || !c.item.path || c.item.isFolder || (c.item.gitObjectType && c.item.gitObjectType !== 'blob')) continue;
+        out.push({
+          path: c.item.path,
+          originalPath: c.originalPath || c.sourceServerItem || null,
+          type: String(c.changeType || 'edit'),
+          objectId: c.item.objectId || null,
+          originalObjectId: c.item.originalObjectId || null,
+          changeTrackingId: c.changeTrackingId || null,
+        });
+      }
+      if (!r || !r.nextSkip) break;
+      skip = r.nextSkip;
+    }
+    return out;
+  }
+
+  repoBase(item) {
+    return `${this.orgUrl(item.org)}/${encodeURIComponent(item.projectId)}/_apis/git/repositories/${encodeURIComponent(item.repoId)}`;
+  }
+
+  /** A file's contents by its blob id. */
+  blob(item, objectId) {
+    return this.request('GET', `${this.repoBase(item)}/blobs/${encodeURIComponent(objectId)}?${qs({ $format: 'octetstream', 'api-version': '7.1' })}`, { org: item.org, raw: true });
+  }
+
+  /** A file's contents at a commit (when there's no blob id). */
+  fileAt(item, path, commit) {
+    const query = qs({ path, 'versionDescriptor.versionType': 'commit', 'versionDescriptor.version': commit, $format: 'octetstream', download: false, 'api-version': '7.1' });
+    return this.request('GET', `${this.repoBase(item)}/items?${query}`, { org: item.org, raw: true });
+  }
+
+  /** Comment threads with their positions tracked to the latest push. */
+  async threadsAt(item, iterationId) {
+    if (iterationId) {
+      try {
+        const r = await this.get(`${this.prBase(item)}/threads?${qs({ $iteration: iterationId, $baseIteration: 0, 'api-version': '7.1' })}`, item.org);
+        return (r && r.value) || [];
+      } catch (e) {
+        if (e.status !== 400) throw e;
+      }
+    }
+    return this.threads(item);
+  }
+
+  createThread(item, thread) {
+    return this.request('POST', `${this.prBase(item)}/threads?api-version=7.1`, { org: item.org, body: thread });
+  }
+
+  reply(item, threadId, parentCommentId, content) {
+    return this.request('POST', `${this.prBase(item)}/threads/${encodeURIComponent(threadId)}/comments?api-version=7.1`, {
+      org: item.org,
+      body: { content, parentCommentId, commentType: 1 },
+    });
+  }
+
+  setThreadStatus(item, threadId, status) {
+    return this.request('PATCH', `${this.prBase(item)}/threads/${encodeURIComponent(threadId)}?api-version=7.1`, { org: item.org, body: { status } });
   }
 
   /** All comment threads of a PR (raw). */

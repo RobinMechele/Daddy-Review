@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { $, patch, store, tomorrowMorning, VOTE_META, failedImages, icon } from './util.js';
 import * as V from './views.js';
+import * as RV from './review.js';
 import { toast, confetti, notifyEvent, setBadge, canNotify } from './effects.js';
 import { createPip } from './pip.js';
 
@@ -33,6 +34,7 @@ const S = {
   setupDismissed: store.get('setupDismissed', false),
   mini: params.get('mini') === '1',
   repoPicker: null,
+  review: null,
 };
 if (S.session && Date.now() - S.session.at > 3 * 36e5) S.session = null;
 // Tidy the address, but the mini window must keep ?mini=1 to survive a reload.
@@ -173,7 +175,7 @@ function render() {
     root._html = null;
     root.innerHTML = `<div id="top"></div><main class="main"><div id="hero"></div><div id="setup"></div>
       <div class="toolbar"><div id="tabs"></div><label class="search" title="Search (/)">${icon('search')}<input id="filter" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search pull requests"></label></div>
-      <section id="list"></section></main><div id="drawer"></div><div id="modal"></div><div id="assistant" class="assistant"></div>`;
+      <section id="list"></section></main><section id="review"></section><div id="drawer"></div><div id="modal"></div><div id="assistant" class="assistant"></div>`;
     const input = $('#filter');
     input.value = S.filter;
     input.addEventListener('input', () => {
@@ -192,6 +194,7 @@ function render() {
   const keys = S.data.inbox.items.map((i) => i.key);
   if (!S.seen) S.seen = new Set(S.data.inbox.fetchedAt ? keys : []);
   else keys.forEach((k) => S.seen.add(k));
+  renderReview();
   renderDrawer();
   renderModal();
   patch($('#assistant'), V.assistant(S));
@@ -247,6 +250,203 @@ function renderModal() {
     const again = modal.querySelector('.picker-list');
     if (again) again.scrollTop = scroll;
   }
+}
+
+// ---- reviewing inside the app ------------------------------------------------------------
+
+/** The review screen; keeps what you're typing (and where) when the app refreshes. */
+function renderReview() {
+  const host = $('#review');
+  document.body.classList.toggle('reviewing', !!S.review);
+  if (!S.review) {
+    patch(host, '');
+    return;
+  }
+  const top = $('#top');
+  if (top) document.documentElement.style.setProperty('--top-h', `${top.offsetHeight}px`);
+  const active = document.activeElement;
+  const draftId = active && host.contains(active) && active.dataset ? active.dataset.draft : null;
+  const sel = draftId ? [active.selectionStart, active.selectionEnd] : null;
+  const files = host.querySelector('.rv-files');
+  const filesScroll = files ? files.scrollTop : 0;
+  if (!patch(host, RV.reviewView(S))) return;
+  const head = host.querySelector('.rv-head');
+  if (head) document.documentElement.style.setProperty('--rv-h', `${head.offsetHeight + 14}px`);
+  const again = host.querySelector('.rv-files');
+  if (again) again.scrollTop = filesScroll;
+  if (draftId) {
+    const el = host.querySelector(`[data-draft="${CSS.escape(draftId)}"]`);
+    if (el) {
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(sel[0], sel[1]);
+    }
+  }
+}
+
+const VIEWED_KEY = 'viewed';
+function loadViewed(key) {
+  const all = store.get(VIEWED_KEY, {}) || {};
+  return (all[key] && all[key].files) || {};
+}
+function saveViewed(key, files) {
+  const all = store.get(VIEWED_KEY, {}) || {};
+  all[key] = { at: Date.now(), files };
+  // Forget PRs you haven't looked at in a month.
+  for (const [k, v] of Object.entries(all)) if (!v || Date.now() - v.at > 30 * 864e5) delete all[k];
+  store.set(VIEWED_KEY, all);
+}
+
+/** Review a PR: in the app, or in Azure DevOps if you switched that off. */
+function startReview(key, e) {
+  if (S.data && S.data.settings.reviewInApp === false) return openPr(key, (e && e.view) || window);
+  if (S.mini && NATIVE) {
+    NATIVE.openReview(key);
+    return null;
+  }
+  return openReview(key);
+}
+
+async function openReview(key, { file = null } = {}) {
+  if (!findItem(key)) {
+    toast('That PR is no longer active', { kind: 'bad' });
+    return;
+  }
+  const same = S.review && S.review.key === key;
+  S.review = {
+    key,
+    loading: true,
+    error: null,
+    data: same ? S.review.data : null,
+    commit: null,
+    file: file || (same ? S.review.file : null),
+    diffs: {},
+    expanded: same ? S.review.expanded : {},
+    composer: null,
+    drafts: same ? S.review.drafts : {},
+    busy: new Set(),
+    viewed: loadViewed(key),
+  };
+  S.assistantOpen = false;
+  S.peek = null;
+  S.settingsOpen = false;
+  S.menu = null;
+  render();
+  if (!same) window.scrollTo(0, 0);
+  try {
+    const data = await api('GET', `/api/review?key=${encodeURIComponent(key)}`);
+    if (!S.review || S.review.key !== key) return;
+    Object.assign(S.review, { loading: false, data, commit: data.commit });
+    if (S.review.file && !data.files.some((f) => f.path === S.review.file)) S.review.file = null;
+    render();
+    if (S.review.file) loadDiff(S.review.file);
+  } catch (e) {
+    if (!S.review || S.review.key !== key) return;
+    Object.assign(S.review, { loading: false, error: e.message });
+    render();
+  }
+}
+
+function closeReview() {
+  S.review = null;
+  render();
+  window.scrollTo(0, 0);
+}
+
+async function loadDiff(path, { retry = false } = {}) {
+  const R = S.review;
+  if (!R || (R.diffs[path] && R.diffs[path] !== 'error' && !retry)) return;
+  R.diffs[path] = 'loading';
+  render();
+  try {
+    const d = await api('GET', `/api/review/diff?key=${encodeURIComponent(R.key)}&path=${encodeURIComponent(path)}`);
+    if (S.review === R) R.diffs[path] = d;
+  } catch {
+    if (S.review === R) R.diffs[path] = 'error';
+  }
+  render();
+}
+
+function showFile(path, { line = null, retry = false } = {}) {
+  const R = S.review;
+  if (!R || !R.data) return;
+  R.file = path;
+  R.composer = null;
+  render();
+  window.scrollTo(0, 0);
+  loadDiff(path, { retry }).then(() => {
+    if (!line) return;
+    const th = [...document.querySelectorAll('#review .th-row')].find((el) => el.previousElementSibling && el.previousElementSibling.querySelector(`.add-c[data-line="${line}"]`));
+    (th || document.querySelector(`#review .add-c[data-line="${line}"]`))?.scrollIntoView({ block: 'center' });
+  });
+}
+
+function stepFile(d) {
+  const R = S.review;
+  if (!R || !R.data || !R.data.files.length) return;
+  const files = R.data.files;
+  const i = R.file ? files.findIndex((f) => f.path === R.file) : -1;
+  const next = files[Math.min(files.length - 1, Math.max(0, i + d))];
+  if (next && next.path !== R.file) showFile(next.path);
+}
+
+function setViewed(path, on) {
+  const R = S.review;
+  const f = R && R.data && R.data.files.find((x) => x.path === path);
+  if (!f) return;
+  if (on && f.version) R.viewed[path] = f.version;
+  else delete R.viewed[path];
+  saveViewed(R.key, R.viewed);
+  render();
+}
+
+/** Send a new comment (on a line or the PR) or a reply; the box keeps its text if it fails. */
+async function sendComment(draftId) {
+  const R = S.review;
+  if (!R) return;
+  const content = (R.drafts[draftId] || '').trim();
+  if (!content) {
+    toast('Write something first');
+    return;
+  }
+  const body = { key: R.key, content };
+  let busyId = draftId;
+  if (draftId.startsWith('t')) {
+    body.threadId = Number(draftId.slice(1));
+  } else if (draftId.startsWith('new:')) {
+    const c = R.composer;
+    if (!c) return;
+    Object.assign(body, { path: c.path, line: c.line, side: c.side, lineText: c.lineText });
+  }
+  R.busy.add(busyId);
+  render();
+  try {
+    const data = await api('POST', '/api/review/comment', body);
+    if (S.review !== R) return;
+    R.data = { ...R.data, files: data.files, threads: data.threads };
+    delete R.drafts[draftId];
+    if (draftId.startsWith('new:')) R.composer = null;
+    toast(body.threadId ? 'Replied' : 'Comment added', { kind: 'ok' });
+  } catch (e) {
+    toast(e.message, { kind: 'bad' });
+  }
+  R.busy.delete(busyId);
+  render();
+}
+
+async function setThreadStatus(id, status) {
+  const R = S.review;
+  if (!R) return;
+  R.busy.add(`t${id}`);
+  render();
+  try {
+    const data = await api('POST', '/api/review/status', { key: R.key, threadId: Number(id), status });
+    if (S.review === R) R.data = { ...R.data, files: data.files, threads: data.threads };
+    toast(status === 'fixed' ? 'Resolved' : 'Reopened', { kind: 'ok' });
+  } catch (e) {
+    toast(e.message, { kind: 'bad' });
+  }
+  R.busy.delete(`t${id}`);
+  render();
 }
 
 // ---- repository picker -----------------------------------------------------------------
@@ -314,11 +514,11 @@ async function saveRepoPicker() {
 
 const findItem = (key) => S.data && S.data.inbox.items.find((i) => i.key === key);
 
-function openPr(key, win = window) {
+function openPr(key, win = window, { session = true } = {}) {
   const it = findItem(key);
   if (!it) return;
   win.open(it.url, '_blank', 'noopener');
-  startSession(key);
+  if (session) startSession(key);
   S.assistantOpen = false;
   S.peek = null;
   S.selectedKey = key;
@@ -482,6 +682,7 @@ const actions = {
   async signout() {
     if (!confirm('Sign out of Daddy Review?')) return;
     S.settingsOpen = false;
+    S.review = null;
     try { setData(await api('POST', '/api/logout')); } catch (e) { toast(e.message, { kind: 'bad' }); }
   },
   refresh: () => refresh(),
@@ -499,7 +700,7 @@ const actions = {
   },
   expand: ({ key }) => toggleDetails(key),
   open: ({ key }, e) => openPr(key, (e && e.view) || window),
-  review: ({ key }, e) => openPr(key, (e && e.view) || window),
+  review: ({ key }, e) => startReview(key, e),
   skip: ({ key }) => {
     S.skipped.add(key);
     render();
@@ -537,6 +738,46 @@ const actions = {
     return saveSettings({ toggleOrg: { name: org, enabled: o.enabled } });
   },
   'remove-org': ({ org }) => saveSettings({ removeOrg: org }),
+  'rv-back': () => closeReview(),
+  'rv-reload': () => S.review && openReview(S.review.key),
+  'rv-overview': () => {
+    if (!S.review) return;
+    S.review.file = null;
+    S.review.composer = null;
+    render();
+    window.scrollTo(0, 0);
+  },
+  'rv-file': ({ path, line, retry }) => showFile(path, { line: line ? Number(line) : null, retry: !!retry }),
+  'rv-step': ({ d }) => stepFile(Number(d)),
+  'rv-expand': ({ path, fold }) => {
+    const R = S.review;
+    if (!R) return;
+    if (!R.expanded[path]) R.expanded[path] = new Set();
+    R.expanded[path].add(Number(fold));
+    render();
+  },
+  'rv-line': ({ path, line, side, i }) => {
+    const R = S.review;
+    const d = R && R.diffs[path];
+    if (!d || !d.lines) return;
+    const l = d.lines[Number(i)];
+    R.composer = { path, line: Number(line), side, lineText: l ? l.s : '' };
+    render();
+    const id = `new:${path}:${side}:${line}`;
+    $(`#review [data-draft="${CSS.escape(id)}"]`)?.focus();
+  },
+  'rv-cancel': () => {
+    if (!S.review) return;
+    S.review.composer = null;
+    render();
+  },
+  'rv-send': ({ id }) => sendComment(id),
+  'rv-reply': ({ id }) => sendComment(`t${id}`),
+  'rv-status': ({ id, status }) => setThreadStatus(id, status),
+  'rv-vote': ({ vote: v }) => S.review && vote(S.review.key, Number(v)),
+  'rv-open': () => S.review && openPr(S.review.key, window, { session: false }),
+  'rv-next-pr': ({ key }) => openReview(key),
+  'review-app': ({ key }) => openReview(key),
   repos: ({ org }) => openRepoPicker(org),
   'repos-close': () => { S.repoPicker = null; render(); },
   'repos-expand': ({ id }) => {
@@ -649,6 +890,8 @@ function bindEvents(doc, win) {
   doc.addEventListener('change', (e) => {
     const pick = e.target.closest('[data-pick]');
     if (pick) return togglePick(pick);
+    const viewed = e.target.closest('[data-viewed]');
+    if (viewed) return setViewed(viewed.dataset.viewed, viewed.checked);
     const el = e.target.closest('[data-change]');
     if (el) {
       S.data.settings[el.dataset.change] = Number(el.value);
@@ -656,6 +899,11 @@ function bindEvents(doc, win) {
     }
   });
   doc.addEventListener('input', (e) => {
+    // What you type in a review is kept, so a refresh never wipes it.
+    if (e.target.dataset && e.target.dataset.draft && S.review) {
+      S.review.drafts[e.target.dataset.draft] = e.target.value;
+      return;
+    }
     if (e.target.id !== 'repo-filter' || !S.repoPicker) return;
     S.repoPicker.filter = e.target.value.trim();
     render();
@@ -694,6 +942,7 @@ function moveSelection(delta) {
 }
 
 function onKey(e) {
+  if (S.review && onReviewKey(e)) return;
   if (S.repoPicker && e.key === 'Escape') {
     e.preventDefault();
     S.repoPicker = null;
@@ -757,6 +1006,45 @@ function onKey(e) {
   }
 }
 
+/** Keys on the review screen. Returns true when handled. */
+function onReviewKey(e) {
+  const R = S.review;
+  const inText = e.target.closest && e.target.closest('textarea, input, select');
+  if (inText && e.target.dataset && e.target.dataset.draft) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      sendComment(e.target.dataset.draft);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.target.blur();
+      if (e.target.dataset.draft.startsWith('new:')) actions['rv-cancel']();
+      return true;
+    }
+    return true;
+  }
+  if (inText || e.metaKey || e.ctrlKey || e.altKey || S.settingsOpen || S.repoPicker || S.shortcuts) return false;
+  const map = {
+    escape: () => (R.composer ? actions['rv-cancel']() : closeReview()),
+    n: () => stepFile(1),
+    j: () => stepFile(1),
+    p: () => stepFile(-1),
+    k: () => stepFile(-1),
+    v: () => {
+      const f = R.file && R.data && R.data.files.find((x) => x.path === R.file);
+      if (f) setViewed(f.path, !RV.isViewed(R, f));
+    },
+    a: () => vote(R.key, 10),
+    o: () => openPr(R.key, window, { session: false }),
+    r: () => openReview(R.key),
+  };
+  const fn = map[e.key.toLowerCase()];
+  if (!fn) return false;
+  e.preventDefault();
+  fn();
+  return true;
+}
+
 /** Back from reviewing in Azure DevOps: refresh and ask how it went. */
 function onReturn() {
   if (!S.data || !S.data.auth.signedIn) return;
@@ -788,6 +1076,8 @@ if (NATIVE) {
   NATIVE.on('daddy:refresh', () => load());
   // A desktop notification was clicked and the PR opened in your browser.
   NATIVE.on('daddy:opened', ({ key } = {}) => key && startSession(key));
+  // A notification or the mini window asked to review a PR here.
+  NATIVE.on('daddy:review', ({ key } = {}) => key && openReview(key));
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
   applyTheme();

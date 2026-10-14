@@ -5,13 +5,14 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = new Set(['daddy:refresh', 'daddy:opened']);
+const EVENTS = new Set(['daddy:refresh', 'daddy:opened', 'daddy:review']);
 
 contextBridge.exposeInMainWorld('daddyNative', {
   platform: process.platform,
   api: (method, path, body) => ipcRenderer.invoke('daddy:api', { method, path, body }),
   openMini: () => ipcRenderer.invoke('daddy:mini'),
   showMain: () => ipcRenderer.send('daddy:show-main'),
+  openReview: (key) => ipcRenderer.send('daddy:open-review', key),
   setBadge: (count, png) => ipcRenderer.send('daddy:badge', { count, png }),
   setTitleBar: (colors) => ipcRenderer.send('daddy:titlebar', colors),
   on: (channel, cb) => {
