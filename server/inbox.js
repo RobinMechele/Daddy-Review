@@ -400,18 +400,41 @@ class Inbox {
     for (const k of this.sizeCache.keys()) if (!keep.has(k)) this.sizeCache.delete(k);
   }
 
-  /** Comment threads on your own PRs: what waits for your answer, and new comments. */
+  /**
+   * Comment threads: on your own PRs (what waits for your answer, new comments)
+   * and on PRs you review (are your comments resolved?).
+   */
   async loadComments(items) {
     const mine = items.filter((i) => i.mine);
-    await mapLimit(mine, 4, async (it) => {
+    // PRs you review: where you asked for changes first, then the rest.
+    const reviewing = items.filter((i) => !i.mine && i.direct && !i.draft)
+      .sort((a, b) => (a.myVote < 0 ? 0 : 1) - (b.myVote < 0 ? 0 : 1))
+      .slice(0, 60);
+    await mapLimit([...mine, ...reviewing], 4, async (it) => {
       const meta = this.orgMeta.get(it.org);
       if (!meta) return;
       try {
-        it.comments = logic.summarizeThreads(await this.ado.threads(it), meta.myId);
+        const threads = await this.ado.threads(it);
+        if (it.mine) it.comments = logic.summarizeThreads(threads, meta.myId);
+        else it.myThreads = logic.myThreads(threads, meta.myId);
       } catch (e) {
         if (e.code === 'AUTH_REQUIRED') throw e;
       }
     });
+  }
+
+  /** You commented or resolved something in the app: take it in without a popup. */
+  setMyThreads(key, counts) {
+    const it = this.items.get(key);
+    if (!it || it.mine) return;
+    it.myThreads = counts;
+    const snap = this.state.snapshot[key];
+    if (snap) {
+      snap.myOpen = counts.open;
+      if (counts.open > 0) snap.resolvedAfterVote = false;
+      snap.state = logic.classify(it, snap).state;
+    }
+    this.save();
   }
 
   // ---- events, reviews, nudges ------------------------------------------------
@@ -511,7 +534,7 @@ class Inbox {
       const c = logic.classify(it, this.state.snapshot[it.key]);
       if (c.state === 'hidden') continue;
       const size = it.files ? logic.sizeInfo(it.files) : null;
-      const view = { ...it, state: c.state, updated: !!c.updated, covered: !!c.covered, size };
+      const view = { ...it, state: c.state, updated: !!c.updated, covered: !!c.covered, resolved: !!c.resolved, size };
       delete view.files;
       const sc = logic.score(view, now);
       view.score = sc.score;
@@ -577,6 +600,7 @@ class Inbox {
     if (vote !== 0) {
       snap.votedCommit = it.commit;
       snap.resetByPush = false;
+      snap.resolvedAfterVote = false;
     }
     snap.state = logic.classify(it, snap).state;
     this.state.snapshot[key] = snap;

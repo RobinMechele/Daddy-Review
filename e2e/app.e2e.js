@@ -85,8 +85,11 @@ async function main() {
     await win.waitForSelector('#list .chip.accent');
     const answer = await win.$$eval('#list .chip.accent', (els) => els.map((e) => e.textContent.trim()));
     assert.ok(answer.includes('1 to answer'), `comments waiting on you: ${answer}`);
+    await win.click('.tab[data-tab="waiting"]');
+    await win.waitForSelector('#list .card[data-key="contoso#1176"]');
+    assert.match(await win.textContent('#list .card[data-key="contoso#1176"] .card-meta'), /1 open/);
     await win.click('.tab[data-tab="todo"]');
-    step('your PRs show comments waiting for your answer');
+    step('your PRs show comments waiting for your answer, and your open comments on others\' PRs');
 
     await win.click('.top-actions [data-act="settings"]');
     await win.waitForSelector('.drawer');

@@ -76,6 +76,8 @@ function toItem(pr, ctx) {
  *  other   - open, but doesn't ask for you (or your team) yet
  * Only your own vote moves a PR out of todo: a teammate voting for your team
  * doesn't mean you reviewed it (it just ranks lower, marked "covered").
+ * You asked for changes and since then all your comments were resolved: it's
+ * your turn again, so it's back in todo (marked "resolved").
  */
 function classify(item, snap) {
   if (item.mine) return { state: 'mine', updated: false };
@@ -83,9 +85,11 @@ function classify(item, snap) {
   if (!item.direct && !item.team) return { state: 'other', updated: false };
   if (item.draft) return { state: 'draft', updated: false };
   const changedSinceVote = item.myVote !== 0 && !!(snap && snap.votedCommit) && !!item.commit && snap.votedCommit !== item.commit;
-  if (item.myVote === 0 || changedSinceVote) {
+  const resolved = item.myVote < 0 && !!(snap && snap.resolvedAfterVote);
+  if (item.myVote === 0 || changedSinceVote || resolved) {
     const r = { state: 'todo', updated: changedSinceVote || !!(snap && snap.resetByPush) };
     if (item.myVote === 0 && !item.direct && item.teamVote !== 0) r.covered = true;
+    if (resolved && !r.updated) r.resolved = true;
     return r;
   }
   return { state: item.myVote < 0 ? 'waiting' : 'done', updated: false };
@@ -119,6 +123,7 @@ function score(item, now = Date.now()) {
   let s = Math.min(40, ageH / 2);
   if (item.required) { s += 30; reasons.push('required'); }
   if (item.updated) { s += 25; reasons.push('updated'); }
+  if (item.resolved) { s += 25; reasons.push('resolved'); }
   if (item.direct) s += 10;
   if (item.size) {
     const f = item.size.files;
@@ -151,6 +156,14 @@ function summarizeThreads(threads, myId) {
     fromOthers: fromOthers.length,
     lastBy: fromOthers.length ? (fromOthers[0].author.displayName || null) : null,
   };
+}
+
+/** The comment threads you started on someone else's PR: how many, and how many still open. */
+function myThreads(threads, myId) {
+  const human = (threads || []).filter((t) => t && !t.isDeleted && Array.isArray(t.comments) && isHuman(t.comments[0]));
+  const started = human.filter((t) => t.comments[0].author && t.comments[0].author.id === myId);
+  const open = started.filter((t) => !t.status || t.status === 'active' || t.status === 'pending' || t.status === 1 || t.status === 6);
+  return { total: started.length, open: open.length };
 }
 
 /** Open threads for the details panel. */
@@ -202,6 +215,10 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
       s.votes = Object.fromEntries(it.reviewers.filter((r) => !r.team).map((r) => [r.id, r.vote]));
       // Comments from others on your PR (kept from before when this round couldn't load them).
       s.othersComments = it.comments ? it.comments.fromOthers : p ? p.othersComments : undefined;
+    } else {
+      // Your comments on someone else's PR (kept from before when this round couldn't load them).
+      s.myOpen = it.myThreads ? it.myThreads.open : p ? p.myOpen : undefined;
+      s.resolvedAfterVote = !!(p && p.resolvedAfterVote && p.myVote === it.myVote);
     }
     const fresh = !baselineOrgs.has(it.org);
 
@@ -220,6 +237,13 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
       }
     }
 
+    // All your comments resolved (one signal, not one per comment).
+    const allResolved = !it.mine && !!p && !!it.myThreads && it.myThreads.total > 0 && it.myThreads.open === 0
+      && typeof p.myOpen === 'number' && p.myOpen > 0;
+    if (allResolved && it.myVote < 0) s.resolvedAfterVote = true;
+    // New open comments from you (a new round of review): not "resolved" anymore.
+    if (it.myThreads && it.myThreads.open > 0) s.resolvedAfterVote = false;
+
     const c = classify(it, s);
     s.state = c.state;
     if (!p) {
@@ -229,6 +253,10 @@ function diff(prev, items, { now = Date.now(), baselineOrgs = new Set(), knownOr
       if (c.state === 'todo' && p.state === 'draft') events.push(event('new', it, { title: 'Ready for review' }));
       else if (fresh && c.state === 'todo' && p.state === 'other') events.push(event('new', it));
       else if (c.state === 'todo' && c.updated && p.state !== 'todo') events.push(event('updated', it));
+      if (allResolved) {
+        const n = it.myThreads.total;
+        events.push(event('resolved', it, { title: n === 1 ? 'Your comment is resolved' : `All ${n} of your comments are resolved`, body: it.title }));
+      }
       if (it.mine && it.comments && typeof p.othersComments === 'number' && it.comments.fromOthers > p.othersComments) {
         const who = it.comments.lastBy || 'Someone';
         events.push(event('comment', it, { title: `${who} commented on your PR`, body: it.title }));
@@ -329,5 +357,5 @@ function weekRecap(reviews, now = Date.now()) {
 
 module.exports = {
   VOTES, toItem, classify, sizeInfo, estimate, score, diff, stats, weekRecap,
-  summarizeThreads, threadDetails, shortRef, cleanName, webUrl, imageOf,
+  summarizeThreads, myThreads, threadDetails, shortRef, cleanName, webUrl, imageOf,
 };

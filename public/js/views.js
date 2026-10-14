@@ -1,7 +1,7 @@
 import { esc, icon, fmtAge, fmtMinutes, initials, hue, firstName, greeting, VOTE_META, failedImages, imageSrc } from './util.js';
 
 const SIZE_TITLE = { XS: '1–2 files', S: '3–5 files', M: '6–15 files', L: '16–40 files', XL: '40+ files' };
-const REASON = { required: 'Required', updated: 'Updated', quick: 'Quick win', old: 'Waiting long' };
+const REASON = { required: 'Required', updated: 'Updated', resolved: 'Comments resolved', quick: 'Quick win', old: 'Waiting long' };
 const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 /** Initials, with the Azure DevOps profile picture on top when there is one. */
@@ -57,6 +57,11 @@ function chipsFor(it) {
     else out.push(chip(`${icon('users')}${people.length}`, 'muted', people.map((r) => r.name).join(', ')));
   }
   if (it.updated) out.push(chip(`${icon('spark')}Updated`, 'accent', 'New changes since your review'));
+  if (it.resolved) out.push(chip(`${icon('check')}Comments resolved`, 'accent', 'All your comments are resolved: have another look'));
+  else if (it.state !== 'mine' && it.myThreads && it.myThreads.open) {
+    const m = it.myThreads;
+    out.push(chip(`${icon('chat')}${m.open} open`, 'muted', `Your comments: ${m.open} of ${m.total} not resolved yet`));
+  }
   if (it.required) out.push(chip('Required', 'warn', 'You (or your team) are a required reviewer'));
   if (it.team && !it.direct) out.push(chip(`${icon('users')}${esc(it.team)}`, '', 'Assigned to your team'));
   if (it.covered) out.push(chip(it.teamVote > 0 ? 'Teammate approved' : 'Teammate: changes', 'muted', 'A teammate already voted for your team'));
@@ -220,7 +225,7 @@ export function hero(S) {
         <p class="muted">${stats.today ? `${stats.today} review${stats.today > 1 ? 's' : ''} today. Nice work.` : 'Nothing waiting for you.'}</p></div>`}
       </div></section>`;
   }
-  const why = next.reasons.map((r) => chip(REASON[r] || r, r === 'quick' ? 'ok' : r === 'updated' ? 'accent' : r === 'required' ? 'warn' : '')).join('');
+  const why = next.reasons.map((r) => chip(REASON[r] || r, r === 'quick' ? 'ok' : r === 'updated' || r === 'resolved' ? 'accent' : r === 'required' ? 'warn' : '')).join('');
   return `<section class="hero">${stats4}
     <div class="next">
       <div class="next-label">${icon('target')}Next up</div>

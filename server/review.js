@@ -117,7 +117,11 @@ class Review {
   async threads(key) {
     const it = this.item(key);
     const pr = await this.files(it);
-    return this.shape(it, pr, await this.loadThreads(it, pr.iteration && pr.iteration.id, this.myId(it)));
+    const threads = await this.loadThreads(it, pr.iteration && pr.iteration.id, this.myId(it));
+    // Your own comments changed here: the inbox takes that in quietly.
+    const started = threads.filter((t) => t.comments[0] && t.comments[0].me);
+    this.inbox.setMyThreads(key, { total: started.length, open: started.filter((t) => t.status === 'active' || t.status === 'pending').length });
+    return this.shape(it, pr, threads);
   }
 
   async content(it, objectId, path, commit) {

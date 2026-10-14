@@ -147,3 +147,9 @@ test('parseOrg accepts names and URLs', () => {
   assert.equal(parseOrg('https://contoso.visualstudio.com/'), 'contoso');
   assert.equal(parseOrg(' dev.azure.com/fab-rikam '), 'fab-rikam');
 });
+
+test('myThreads counts the threads you started and how many are still open', () => {
+  const th = (by, status) => ({ status, comments: [{ author: { id: by }, content: 'x', commentType: 'text' }] });
+  const threads = [th(ME, 'active'), th(ME, 'fixed'), th('other', 'active'), { status: 'active', comments: [{ commentType: 'system', author: { id: ME } }] }, th(ME, 'pending')];
+  assert.deepEqual(logic.myThreads(threads, ME), { total: 3, open: 2 });
+});

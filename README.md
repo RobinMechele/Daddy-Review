@@ -27,8 +27,9 @@ Then click **Sign in with Microsoft**: your browser opens, you pick your work ac
 | **Next up** | Ranks your queue: required reviews, quick wins (few files), PRs updated since your vote and long-waiting ones go first. Shows size (XS–XL) and an estimated review time. |
 | **One-click votes** | Approve, approve with suggestions, wait for author, reject or snooze right from the list. Every vote has *Undo*. |
 | **Review in the app** | *Review now* opens the PR right in Daddy Review: every changed file with its diff, comments shown on their lines, comment on any line (+), reply, resolve, mark files as viewed and vote. *Next PR* takes you to the next one. Prefer Azure DevOps? Switch off *Review inside the app* in Settings: then it opens in your browser and the assistant asks how it went when you're back. |
-| **Popups** | Windows notifications for new review requests, drafts that are ready for review, new pushes after your review, votes and comments on *your* PRs, a nudge when PRs wait too long and a Friday recap. Click one to open the PR. Optionally only during work hours. |
+| **Popups** | Windows notifications for new review requests, drafts that are ready for review, new pushes after your review, all your comments resolved, votes and comments on *your* PRs, a nudge when PRs wait too long and a Friday recap. Click one to open the PR. Optionally only during work hours. |
 | **Comments on your PRs** | Your own PRs show which comment threads are waiting for your answer. |
+| **Your comments resolved** | On PRs you review you see how many of your comments are still open. When the author has resolved all of them you get one popup (not one per comment), and if you had asked for changes the PR comes back to *To review*. |
 | **Search** | Press `/` and type: title, repo, author, branch or label. |
 | **Shortcut** | `Ctrl+Alt+R` shows or hides Daddy Review from anywhere. |
 | **Lives in the tray** | Closing the window keeps it watching in the background; the taskbar shows how many PRs are waiting. Starts with Windows (switch off in Settings or the tray menu). |

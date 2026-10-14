@@ -227,3 +227,61 @@ test('Others: open PRs that don\'t ask for you, and adding yourself as a reviewe
   r = await core.call('POST', '/api/vote', { body: { key: 'contoso#1209', vote: 10 } });
   assert.equal(item(r, 1209).state, 'done');
 });
+
+test('your comments on someone else\'s PR: one popup when they\'re all resolved', async (t) => {
+  const { fake, core, toasts } = await signedInCore(t);
+  const key = 'contoso#1176';
+  let r = await core.call('GET', '/api/state');
+  // You asked for changes, with one open comment.
+  assert.equal(item(r, 1176).state, 'waiting');
+  assert.deepEqual(item(r, 1176).myThreads, { total: 1, open: 1 });
+
+  // Add a second comment (from the app: no popup for what you do yourself).
+  r = await core.call('POST', '/api/review/comment', { body: { key, content: 'Also the icon is blurry on hdpi.' } });
+  assert.equal(r.status, 200);
+  r = await core.call('POST', '/api/refresh');
+  assert.deepEqual(item(r, 1176).myThreads, { total: 2, open: 2 });
+
+  // The author resolves one: nothing yet.
+  const pr = fake.control.pr('contoso', 1176);
+  pr.threads[0].status = 'fixed';
+  r = await core.call('POST', '/api/refresh');
+  assert.deepEqual(item(r, 1176).myThreads, { total: 2, open: 1 });
+  assert.ok(!r.data.events.some((e) => e.type === 'resolved'));
+  assert.equal(item(r, 1176).state, 'waiting');
+
+  // ...and the other one: one popup, and it's your turn again.
+  pr.threads[pr.threads.length - 1].status = 'fixed';
+  r = await core.call('POST', '/api/refresh');
+  const evts = r.data.events.filter((e) => e.type === 'resolved');
+  assert.equal(evts.length, 1);
+  assert.equal(evts[0].title, 'All 2 of your comments are resolved');
+  assert.equal(evts[0].key, key);
+  assert.equal(item(r, 1176).state, 'todo');
+  assert.equal(item(r, 1176).resolved, true);
+  assert.ok(item(r, 1176).reasons.includes('resolved'));
+  await new Promise((res) => setTimeout(res, 600));
+  assert.equal(toasts.filter((n) => n.type === 'resolved').length, 1);
+
+  // Nothing new on the next refresh.
+  r = await core.call('POST', '/api/refresh');
+  assert.equal(r.data.events.filter((e) => e.type === 'resolved').length, 1);
+
+  // You look again and still want changes: back to Waiting.
+  r = await core.call('POST', '/api/vote', { body: { key, vote: -5 } });
+  assert.equal(item(r, 1176).state, 'waiting');
+  r = await core.call('POST', '/api/refresh');
+  assert.equal(item(r, 1176).state, 'waiting');
+});
+
+test('resolving your own comment yourself doesn\'t pop up', async (t) => {
+  const { core } = await signedInCore(t);
+  const key = 'contoso#1176';
+  const rv = await core.call('GET', `/api/review?key=${encodeURIComponent(key)}`);
+  const mine = rv.data.threads.find((x) => x.comments[0].me);
+  const r1 = await core.call('POST', '/api/review/status', { body: { key, threadId: mine.id, status: 'fixed' } });
+  assert.equal(r1.status, 200);
+  const r = await core.call('POST', '/api/refresh');
+  assert.ok(!r.data.events.some((e) => e.type === 'resolved'));
+  assert.equal(item(r, 1176).state, 'waiting');
+});
